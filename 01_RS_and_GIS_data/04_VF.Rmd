@@ -1,0 +1,132 @@
+---
+title: "Vegetation fraction (rasterization)"
+author: "Stenka Vulova"
+date: "24 August 2021"
+output: html_document
+---
+
+# Libraries 
+
+```{r libraries, include=FALSE}
+
+library(sp)
+library(raster)
+library(rgdal)
+library(lubridate)
+library(maptools)
+library(ggplot2)
+library(tidyr)
+library(plyr)
+library(dplyr)
+library(FSA) # Dunns test
+library(RColorBrewer)
+library(reshape2)
+library(scales)
+library(tidyverse)
+
+# machine learning libraries 
+library(caret)
+#library(CAST)
+library(doSNOW) # do training in parallel
+library(gbm)
+
+# https://cran.rstudio.com/web/packages/fasterize/vignettes/using-fasterize.html 
+
+library(fasterize)
+library(sf)
+library(tictoc)
+
+```
+
+# Import data 
+
+## Atlas polygons 
+
+```{r import data }
+
+atlas_polygon = readRDS("D:/Stenka_UWI/Topic_3/03_RAW_DATA/veg_fraction_Alby/atlas_polygon")
+
+# add column where veg frac is 0 to 1 (not 0 to 100)
+
+atlas_polygon$vegfrac_1 = atlas_polygon$veg_fraction/100
+
+```
+
+## Berlin extent shapefile 
+
+```{r import Berlin shape, echo = FALSE }
+
+berlin_shape <- readOGR(dsn='D:/Stenka_UWI/Topic_3/03_RAW_DATA/Urban_Atlas_2018_LULC/DE001L1_BERLIN_UA2018_v013/Data',layer='Berlin_boundary') # read shapefile with Berlin extent 
+
+# change CRS of berlin_shape to match USGS products 
+berlin_shape <- spTransform(berlin_shape, CRS("+proj=utm +zone=33 +datum=WGS84 +units=m +no_defs +ellps=WGS84 +towgs84=0,0,0"))
+
+# new Berlin shape with longitude and latitude (not UTM)
+#pro_berlin_shape <- spTransform(berlin_shape, CRS("+proj=longlat +zone=33 +datum=WGS84 +units=m +no_defs +ellps=WGS84 +towgs84=0,0,0"))
+
+plot(berlin_shape)
+
+```
+
+## 1-m BH 
+
+I need a raster to rasterize to. Here is the 1-m BH data. 
+
+```{r Import BH data 1m }
+
+# BH 
+BH = raster(paste('D:/Stenka_UWI/Topic_2/04_PROCESSED_DATA/BH_VH_1m/BUI_DSM_Berlin_1m_noNA.tif', sep=''))
+#plot(BH, col=colorRampPalette(c("lightblue1", "navyblue", "forestgreen", 'yellow1', 'darkorange','red3', 'dark red'))(255), zlim = c(0,20))
+
+BH
+
+# crop to Berlin
+BH_Berlin <- raster::crop(BH, extent(berlin_shape))
+plot(BH_Berlin)
+
+```
+## Import 10-m UA BH data
+
+Urban Atlas BH 
+
+```{r import 10m BH data}
+
+BH_10m = raster::raster("D:/Stenka_UWI/Topic_3/04_PROCESSED_DATA/Urban_Atlas_BH_2012/BH_10m_UTM.tif")
+plot(BH_10m)
+
+```
+
+
+# Fasterize 
+
+## 1m resolution
+
+```{r Fasterize 1m }
+
+vegfrac_1m = fasterize::fasterize(sf = atlas_polygon,
+                                  raster = BH_Berlin,
+                                  field = "vegfrac_1",
+                                  fun = "max")
+
+plot(vegfrac_1m)
+
+#writeRaster( vegfrac_1m ,"D:/Stenka_UWI/Topic_3/04_PROCESSED_DATA/20210823_surface_fractions/vegfrac_ADR/vegfrac_1m.tif", options='COMPRESS=LZW')
+
+
+```
+
+## 10m resolution 
+
+```{r Fasterize 10m }
+
+vegfrac_10m = fasterize::fasterize(sf = atlas_polygon,
+                                  raster = BH_10m,
+                                  field = "vegfrac_1",
+                                  fun = "max")
+
+plot(vegfrac_10m)
+
+#writeRaster( vegfrac_10m ,"D:/Stenka_UWI/Topic_3/04_PROCESSED_DATA/20210823_surface_fractions/vegfrac_ADR/vegfrac_10m.tif", options='COMPRESS=LZW')
+
+
+```

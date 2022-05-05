@@ -1,0 +1,168 @@
+//######################################################################################################################
+// calculate time series of spectral indices for parcels from Sentinel-2 L2A product ####
+//#######################################################################################
+
+//################
+// create AOI ####
+//################
+var worldcountries = ee.FeatureCollection('FAO/GAUL/2015/level1');
+var filterCountry = ee.Filter.eq('ADM1_NAME', 'Berlin');
+var country = worldcountries.filter(filterCountry);
+
+//add 5km buffer
+var bufferBy = function(size) {
+  return function(feature) {
+    return feature.buffer(size);   
+  };
+};
+var roi = country.map(bufferBy(5000));
+
+//show in map canvas
+Map.centerObject(roi, 9); // zoom level for berlin is 9
+Map.addLayer(roi, {color: 'red'}, 'parcels');
+//Map.addLayer(country, {color: 'yellow'}, 'parcels');
+
+
+//#############################
+// define study time frame ####
+//#############################
+var year = 2020;
+print(('parcel_time_series_').concat(year));
+var startdate = ee.Date.fromYMD(year,1,1); var enddate = ee.Date.fromYMD(year,1,31); var month = 1;
+//var startdate = ee.Date.fromYMD(year,2,1); var enddate = ee.Date.fromYMD(year,2,28); var month = 2;
+//var startdate = ee.Date.fromYMD(year,3,1); var enddate = ee.Date.fromYMD(year,3,31); var month = 3;
+//var startdate = ee.Date.fromYMD(year,4,1); var enddate = ee.Date.fromYMD(year,4,30); var month = 4;
+//var startdate = ee.Date.fromYMD(year,5,1); var enddate = ee.Date.fromYMD(year,5,31); var month = 5;
+//var startdate = ee.Date.fromYMD(year,6,1); var enddate = ee.Date.fromYMD(year,6,30); var month = 6;
+//var startdate = ee.Date.fromYMD(year,7,1); var enddate = ee.Date.fromYMD(year,7,31); var month = 7;
+//var startdate = ee.Date.fromYMD(year,8,1); var enddate = ee.Date.fromYMD(year,8,31); var month = 8;
+//var startdate = ee.Date.fromYMD(year,9,1); var enddate = ee.Date.fromYMD(year,9,30); var month = 9;
+//var startdate = ee.Date.fromYMD(year,10,1); var enddate = ee.Date.fromYMD(year,10,31); var month = 10;
+//var startdate = ee.Date.fromYMD(year,11,1); var enddate = ee.Date.fromYMD(year,11,30); var month = 11;
+//var startdate = ee.Date.fromYMD(year,12,1); var enddate = ee.Date.fromYMD(year,12,31); var month = 12;
+
+//#############################################
+// create cloud masked S2 image collection ####
+//#############################################
+
+// define collection
+//sentinel-2 collection
+var s2 = ee.ImageCollection('COPERNICUS/S2_SR') //S2_SR = L2A product; S2 = L1C product
+  .filterDate(startdate, enddate) //define your time frame
+  .filterBounds(roi)             //boundary is your roi
+  .map(function (image) {
+    return image
+      .set('date', image.date().format('yyyy-MM-dd'));
+  });
+print('sentinel-2 collection', s2);
+print('Number of images in S2 collection:', s2.size());
+
+// mask clouds w quality band QA60
+var maskcloud1 = function(image) {
+  var QA60 = image.select(['QA60']);
+  return image.updateMask(QA60.lt(1));
+  };
+var maskCollection1 = s2.map(maskcloud1); //apply function on collection
+print('clouds masked', maskCollection1);
+
+// mask cirrus clouds by threshold from B1 (= aerosol band)
+var maskcloud2 = function(image) {
+  var B1 = image.select(['B1']);
+  var bin = B1.gt(1500);                  //mask values larger than 1500
+  return image.updateMask(bin.lt(1));
+  };
+var maskCollection2 = maskCollection1.map(maskcloud2); // apply cloud mask function
+print('cirrus clouds masked', maskCollection2);
+
+//#################################################
+// create mosaiced daily date image collection ####
+//#################################################
+//mosaics images with same date to single mosaic (i think...)
+var daily = ee.ImageCollection(
+    ee.Join.saveAll('images').apply({
+      primary: maskCollection2,
+      secondary: maskCollection2,
+      condition: ee.Filter.and(
+        ee.Filter.equals({
+          leftField: 'date',
+          rightField: 'date'
+        }),
+        ee.Filter.equals({
+          leftField: 'SPACECRAFT_NAME',
+          rightField: 'SPACECRAFT_NAME'
+        }),
+        ee.Filter.equals({
+          leftField: 'SENSING_ORBIT_NUMBER',
+          rightField: 'SENSING_ORBIT_NUMBER'
+        })
+      )
+    })
+  )
+  .map(function (image) {
+    return ee.ImageCollection(ee.List(image.get('images')))
+      .mosaic()
+      .set('system:time_start', ee.Date(image.get('date')).millis());
+  });
+print('daily date time series created', daily);
+
+//############################################################
+// calculate spectral indices from daily image collection ####
+//############################################################
+
+// calculate NDVI from the cloud free image collection
+var calculateNDVI = function(scene) {
+  var dateString = ee.Date(scene.get('system:time_start')).format('yyyy-MM-dd');   //get string of the dates
+  var ndvi = scene.normalizedDifference(['B8', 'B4']);
+  return ndvi.rename(dateString); //rename each scene with date
+};
+var NDVIcollection = daily.map(calculateNDVI);
+print('NDVI raster stack calculated', NDVIcollection);
+
+//#############################
+// stack image collections ####
+//#############################
+
+// stack collection
+var stackCollection = function(collection) {
+  // create an initial image
+  var first = ee.Image(collection.first()).select([]);
+
+  // function that appends a band to an image
+  var appendBands = function(image, previous) {
+    return ee.Image(previous).addBands(image);
+  };
+  return ee.Image(collection.iterate(appendBands, first));
+};
+var NDVIstacked = stackCollection(NDVIcollection);          //NDVI
+
+// clip raster stack by by roi
+var NDVIstacked = NDVIstacked.clip(roi);        //NDVI
+
+// display the first band of the stacked image (optional)
+var ndviPal = ['red', 'white','darkgreen'];
+Map.addLayer(NDVIstacked.select(1), {min:0, max:0.6, palette: ndviPal}, 'NDVI example'); //first band
+//Map.addLayer(NDVIstacked, {min:0, max:0.6}, 'NDVI stack'); //display all images in stack
+
+//####################################################
+// export raster stack to google drive (dont run) ####
+//####################################################
+// downloading rasters is okay for test purposes, but only recommended for smaller regions
+// if large extent of the ROI, the rasters stack will separated into several tiles
+// set the scale for instance to 30m for smaller files and faster processing
+
+// image to drive export
+Export.image.toDrive({image: NDVIstacked, description: ('S2_SR_NDVI_').concat(year).concat('_').concat(month), folder: ('ndvi_time_series_berlin'), scale:    10, region: roi});
+//Export.image.toDrive({image: NDVIstacked, description: ('S2_SR_NDVI_').concat(year).concat('_').concat(month), folder: ('ndvi_time_series_niedersachsen'), scale:    10, region: roi, maxPixels: 2000000000});
+
+//plot layer on top of map canvas
+//Map.addLayer(roi, {color: 'red'}, 'parcels');
+//Map.addLayer(berlin, {color: 'yellow'}, 'parcels');
+
+//#############
+// credits ####
+//#############
+// Initial code examples from
+//https://gis.stackexchange.com/questions/254722/how-to-stack-bands-in-google-earth-engine
+//https://www.researchgate.net/post/How-to-stack-layers-in-Google-Earth-Engine-GEE
+//https://geohackweek.github.io/GoogleEarthEngine/04-reducers/
+//https://gis.stackexchange.com/questions/363696/daily-mosaic-in-sentinel-2

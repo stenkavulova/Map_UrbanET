@@ -1,0 +1,429 @@
+---
+title: "ETo (2m wind speed)"
+author: "Stenka Vulova"
+date: "18 Oct. 2021"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+This time, I am converting the 10m wind speed to 2m.
+
+http://www.fao.org/3/X0490E/x0490e07.htm#wind%20speed
+
+"Wind speeds measured at different heights above the soil surface are different. Surface friction tends to slow down wind passing over it. Wind speed is slowest at the surface and increases with height. For this reason anemometers are placed at a chosen standard height, i.e., 10 m in meteorology and 2 or 3 m in agrometeorology. For the calculation of evapotranspiration, wind speed measured at 2 m above the surface is required. To adjust wind speed data obtained from instruments placed at elevations other than the standard height of 2m, a logarithmic wind speed profile may be used for measurements above a short grassed surface:" 
+
+
+# Libraries 
+
+```{r libraries, include = FALSE }
+
+library(sp)
+library(raster)
+library(rgdal)
+library(lubridate)
+library(maptools)
+library(ggplot2)
+library(plyr)
+library(dplyr)
+library(grid)
+library(spatstat)
+library(sf)
+library(readr)
+library(RColorBrewer)
+library(reshape2)
+library(scales)
+
+library(tictoc) # benchmarking 
+library(spatialEco) # for weighted_footprint function 
+
+library(openair)
+library(water)
+library(stats)
+library(zoo)
+library(water)
+
+library(MeTo)
+
+```
+
+# Calculate ET0 from DWD data 
+
+I am calculating hourly ET0 from DWD data using the water R package.    
+https://rdrr.io/cran/water/man/hourlyET.html 
+
+I am looking at their 2016 publication on the water package:   
+ "The main input arguments are the csv file and a vector with the order of the needed variables (radiation, temperature, wind speed and relative humidity) called columns."    
+ 
+"The argument ET allows to select between two ETr methods. ET= ETo, similar to clipped, cool-season grass, is the method for short crops and ET = ETr, similar to 0.5 m tall full-cover alfalfa, is the method for tall crops. By default, it will use ET = ETr, but the user should choose according to the conditions of the weather station."  
+
+They refer to Allen et al. (2005). Here it is:    
+
+"R. G. Allen, I. A. Walter, E. R., T. Howell, D. Itenfisu, and M. Jensen. The ASCE standardized reference evapotranspiration equation. Technical report, 2005. [p1, 5, 11]"  
+
+
+# Create dataset suitable to water package 
+
+**Radiation**  
+DWD originally gives its data "FG_STRAHL" as J/cm^2 (hourly sum of solar incoming radiation). But Alby already converted them: "The radiation variables were converted from J/cm^2 to W m-2." W m^-2 is exactly what I need for solar radiation for the water package. 
+
+You can see in Alby's code `codeDWD_TUCCdata`:  
+`# convert J/cm^2 to W m-2`
+
+Solar radiation is shortwave. "Solar energy enters our atmosphere as shortwave radiation in the form of ultraviolet (UV) rays (the ones that give us sunburn) and visible light." https://climate.ncsu.edu/edu/RadiationTypes
+"Therefore, the sun gives off *shortwave radiation*, as it is extremely hot and has a lot of energy to give."  
+
+**Air temperature**  
+DWD provides 2m air temperature in degrees Celsius.  
+http://ftp-cdc.dwd.de/climate_environment/CDC/observations_germany/climate/hourly/air_temperature/historical/DESCRIPTION_obsgermany_climate_hourly_tu_historical_en.pdf
+
+The expected units are degrees C for the water package .
+
+**Wind speed**
+DWD provides mean wind speed in m/s.  
+Alby used "wind_synop": http://ftp-cdc.dwd.de/climate_environment/CDC/observations_germany/climate/hourly/wind_synop/historical/ 
+
+The expected units are m/s for wind speed for the water package.
+
+**Relative humidity**  
+DWD provides 2m relative humidity in %.  
+http://ftp-cdc.dwd.de/climate_environment/CDC/observations_germany/climate/hourly/air_temperature/historical/DESCRIPTION_obsgermany_climate_hourly_tu_historical_en.pdf  
+
+The expected units are % for RH for the water package.  
+
+# Import DWD data 
+
+```{r Import DWD data }
+
+#### air temp ####
+
+load("/Users/stenkavulova/Dropbox/Stenka_UWI/Topic_3/03_RAW_DATA/20210830_DWDdata/Ta.RData")
+
+#### RH ####
+
+load("/Users/stenkavulova/Dropbox/Stenka_UWI/Topic_3/03_RAW_DATA/20210830_DWDdata/rh.RData")
+
+#### wind speed ####
+
+# 10m data - already all converted to 10m
+
+load("/Users/stenkavulova/Dropbox/Stenka_UWI/Topic_3/03_RAW_DATA/20210830_DWDdata/ws_10m.RData")
+
+#### solar radiation Rs ####
+
+# it is in W m-2
+# Rs 
+
+# Rs_sun19j[i] <- (0.25 + 0.5*sun_19_C[i]/60)*Ra_sun19[i]*100
+# convert to w m-2
+# Rs_sun19[i] <- round((Rs_sun19j[i]*100*100)/(60*60),2)
+
+load("/Users/stenkavulova/Dropbox/Stenka_UWI/Topic_3/03_RAW_DATA/20210830_DWDdata/Rs_sun.RData")
+
+```
+
+# Convert wind speed to 2 m
+
+http://www.fao.org/3/X0490E/x0490e07.htm#wind%20speed
+
+"For the calculation of evapotranspiration, wind speed measured at 2 m above the surface is required."
+
+## Melt df 
+
+```{r melt ws df }
+
+ws_melt = reshape::melt(ws_19_10m, id = c("timestamp"))
+
+glimpse(ws_melt)
+
+# Rename columns to match the requirements from the "water" package 
+names(ws_melt)[names(ws_melt) == "value"] <- "wind"
+names(ws_melt)[names(ws_melt) == "variable"] <- "station_ID"
+
+```
+
+
+## Convert ws to 2m
+
+```{r convert ws to 2m }
+
+# https://rdrr.io/cran/MeTo/man/adj_u2.html
+# Adjust wind speed data to 2 meter height. 
+# u = measured wind speed at uz above ground surface [m/s]
+# uz = height of windspeed measurement above ground surface [m]
+
+ws_melt$wind_2m = MeTo::adj_u2(u = ws_melt$wind, uz = 10)
+
+```
+
+## Cast df 
+
+```{r cast df }
+
+ws_melt2 = ws_melt
+ws_melt2$wind = NULL
+
+ws_2m = dcast(ws_melt2,
+              timestamp ~ station_ID, value.var = "wind_2m")
+
+# save ws at 2m 
+
+#write.csv(ws_2m, file = "/Users/stenkavulova/Dropbox/Stenka_UWI/Topic_3/04_PROCESSED_DATA/20211018_ETo/ws_2m.csv", row.names = FALSE)
+
+#save(ws_2m, file = "/Users/stenkavulova/Dropbox/Stenka_UWI/Topic_3/04_PROCESSED_DATA/20211018_ETo/ws_2m.RData")
+
+```
+
+
+# Load the DWD metadata 
+
+Here is an example from just Tegel:  
+
+Stations_id von_datum bis_datum Stationshoehe geoBreite geoLaenge Stationsname Bundesland  
+
+00430 19860101 20200909             36     52.5644   13.3088 Berlin-Tegel                             Berlin  
+
+
+From air temp. DWD metadata:  
+
+* Stations_ID: 430
+* Stationsname: Berlin-Tegel
+* Geo. Laenge [Grad]: 13.31 
+* Geo. Breite [Grad]: 52.56 
+* Stationshoehe: 36
+* Geberhoehe ueber Grund [m]: 2
+
+I will just load metadata from air temperature.
+
+```{r Load the DWD metadata }
+
+# airT + RH
+load("/Users/stenkavulova/Dropbox/Stenka_UWI/Topic_3/03_RAW_DATA/20210830_DWDdata/metadata/station_70km_Ta.RData")
+
+# wind
+load("/Users/stenkavulova/Dropbox/Stenka_UWI/Topic_3/03_RAW_DATA/20210830_DWDdata/metadata/station_70km_Wind.RData")
+
+# sun -> solar radiation was derived from sunshine duration
+load("/Users/stenkavulova/Dropbox/Stenka_UWI/Topic_3/03_RAW_DATA/20210830_DWDdata/metadata/station_70km_sun.RData")
+
+```
+
+# Melt datasets 
+
+## Ta
+
+```{r Melt Ta }
+
+Ta_melt = reshape::melt(Ta_19, id = c("timestamp"))
+
+glimpse(Ta_melt)
+
+# Rename columns to match the requirements from the "water" package 
+names(Ta_melt)[names(Ta_melt) == "value"] <- "temp"
+names(Ta_melt)[names(Ta_melt) == "variable"] <- "station_ID"
+
+```
+
+## RH
+
+```{r Melt rh }
+
+rh_melt = reshape::melt(rh_19, id = c("timestamp"))
+
+glimpse(rh_melt)
+
+# Rename columns to match the requirements from the "water" package 
+names(rh_melt)[names(rh_melt) == "value"] <- "RH"
+names(rh_melt)[names(rh_melt) == "variable"] <- "station_ID"
+
+```
+
+## Wind speed
+
+```{r Melt ws }
+
+glimpse(ws_melt2)
+
+ws_2m_melt = ws_melt2
+
+# Rename columns to match the requirements from the "water" package 
+names(ws_2m_melt)[names(ws_2m_melt) == "wind_2m"] <- "wind"
+
+```
+
+## Solar radiation
+
+```{r Melt Rs }
+
+Rs_sun_melt = reshape::melt(Rs_sun19, id = c("timestamp"))
+
+glimpse(Rs_sun_melt)
+
+# Rename columns to match the requirements from the "water" package 
+names(Rs_sun_melt)[names(Rs_sun_melt) == "value"] <- "radiation"
+names(Rs_sun_melt)[names(Rs_sun_melt) == "variable"] <- "station_ID"
+
+```
+
+# Merge datasets 
+
+Merge the melted datasets 
+
+```{r Merge melted dfs }
+
+# https://stackoverflow.com/questions/8091303/simultaneously-merge-multiple-data-frames-in-a-list
+
+met_melt = 
+list(Ta_melt, rh_melt, ws_2m_melt, Rs_sun_melt) %>% purrr::reduce(full_join)
+
+# Add "hours" = time of the day in hours in 24hs format
+met_melt$hours = lubridate::hour(met_melt$timestamp)
+
+# Add "DOY" = day of year
+met_melt$DOY = lubridate::yday(met_melt$timestamp)
+
+```
+
+## Add metadata 
+
+Need lat, long, and elev
+
+https://www.rdocumentation.org/packages/water/versions/0.8/topics/hourlyET 
+
+```{r filter metadata }
+
+metasun = station_70km_sun %>% 
+  select(Stations_id, Stationshoehe, geoBreite, geoLaenge)
+
+metawind = station_70km_Wind %>% 
+  select(Stations_id, Stationshoehe, geoBreite, geoLaenge)
+
+metaair = station_70km_Ta %>% 
+  select(Stations_id, Stationshoehe, geoBreite, geoLaenge)
+
+# merge all metadata
+
+meta_all = 
+list(metasun, metawind, metaair) %>% purrr::reduce(full_join)
+
+glimpse(meta_all)
+
+names(meta_all)[names(meta_all) == 'Stations_id'] <- 'station_ID'
+names(meta_all)[names(meta_all) == 'Stationshoehe'] <- 'elev'
+names(meta_all)[names(meta_all) == 'geoBreite'] <- 'lat'
+names(meta_all)[names(meta_all) == 'geoLaenge'] <- 'long'
+
+
+
+```
+
+## Merge with metadata
+
+```{r Merge with metadata }
+
+meta_all$station_ID = as.character(meta_all$station_ID)
+
+# Add ID_ 
+meta_all$station_ID = paste0("ID_", meta_all$station_ID)
+
+meta_all$station_ID = as.factor(meta_all$station_ID)
+
+met_ready = dplyr::full_join(met_melt, meta_all)
+
+```
+
+# Run ETo
+
+```{r Run ETo }
+
+# "ETo" for short crops, similar to clipped, cool-season grass
+
+# # height_Ta_ground is always 2m (as Alby noted)
+
+met_ready$ETo = water::hourlyET(WeatherStation = met_ready,
+                              hours = met_ready$hours,
+                DOY = met_ready$DOY, 
+                ET.instantaneous = FALSE,
+                ET = "ETo", # short crops, similar to clipped, cool-season grass
+                height = 2, # weather station sensors height in meters
+                lat = met_ready$lat ,
+                long = met_ready$long ,
+                elev = met_ready$elev
+                )
+
+```
+
+## save ETo
+
+```{r save ETo}
+
+ETo_2m_melt = met_ready
+
+#write.csv(ETo_2m_melt, file = "/Users/stenkavulova/Dropbox/Stenka_UWI/Topic_3/04_PROCESSED_DATA/20211018_ETo/ETo_2m_melt.csv", row.names = FALSE)
+
+#save(ETo_2m_melt, file = "/Users/stenkavulova/Dropbox/Stenka_UWI/Topic_3/04_PROCESSED_DATA/20211018_ETo/ETo_2m_melt.RData")
+
+```
+
+# Make wide ETo df
+
+Let's un-melt the ETo df (for interpolation).
+
+```{r cast ETo }
+
+glimpse(met_ready)
+
+ETo_cast = met_ready %>% 
+  select(timestamp, station_ID, ETo)
+
+summary(ETo_cast)
+
+# ETo NAs :271915
+
+# remove all rows with NAs
+
+ETo_cast2 = na.omit(ETo_cast)
+summary(ETo_cast2)
+
+levels(ETo_cast2$station_ID)
+
+# How many rows per station ID?
+table(ETo_cast2$station_ID)
+
+# Actually, 8 of the stations have 0 observations now.
+# 18 levels - 8 = 10 stations remain with ETo 
+
+ggplot(ETo_cast2,
+       aes(x = timestamp, y = ETo, 
+           color = station_ID))+
+  geom_line()
+
+```
+
+## Cast 
+
+```{r cast ETo 2 }
+
+ETo_cast3 = dcast(ETo_cast2,
+                  timestamp ~ station_ID, value.var = "ETo")
+
+```
+
+## save cast ETo
+
+```{r save cast ETo }
+
+glimpse(ETo_cast3)
+
+ETo_for_interpol_ws2 = ETo_cast3
+
+#write.csv(ETo_for_interpol_ws2, file = "/Users/stenkavulova/Dropbox/Stenka_UWI/Topic_3/04_PROCESSED_DATA/20211018_ETo/ETo_for_interpol_ws2.csv", row.names = FALSE)
+
+#save(ETo_for_interpol_ws2, file = "/Users/stenkavulova/Dropbox/Stenka_UWI/Topic_3/04_PROCESSED_DATA/20211018_ETo/ETo_for_interpol_ws2.RData")
+
+
+
+```
+
+
+

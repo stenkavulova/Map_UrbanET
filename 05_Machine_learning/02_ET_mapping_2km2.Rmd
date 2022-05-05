@@ -1,0 +1,410 @@
+---
+title: "Mapping ET (TUCC)"
+author: "Stenka Vulova"
+date: "22 Nov. 2021"
+output: html_document
+---
+
+Now I will map ET around the TUCC tower (1 km in each direction around the tower, or 2 km^2).  
+I will use this later to validate with footprints. 
+
+# Libraries 
+
+```{r libraries, include = FALSE }
+
+library(sp)
+library(raster)
+library(rgdal)
+library(lubridate)
+library(maptools)
+library(ggplot2)
+library(tidyr)
+library(plyr)
+library(dplyr)
+library(RColorBrewer)
+library(reshape2)
+library(scales)
+library(readr)
+library(rgeos)
+
+library(grid)
+library(spatstat)
+library(sf)
+
+library(zoo)
+library(tictoc) # benchmarking
+
+library(pbapply)
+
+library(spatialEco) # for weighted_footprint function 
+
+library(caret)
+library(doSNOW) # do training in parallel
+library(doParallel) 
+library(randomForest)
+
+devtools::install_github("AlbyDR/rSCOPE")
+
+library(rSCOPE)
+
+library(terra)
+
+```
+
+# NDVI 
+
+This is NDVI cropped and resampled to the footprint. 
+
+```{r load NDVI }
+
+NDVI_2020 = terra::rast("D:/Stenka_UWI/Topic_3/04_PROCESSED_DATA/20211004_NDVI_interpolated/2020/TUCC/NDVI_TUCC_ftp_proj_2020.tif") # UTM
+
+NDVI_2020
+
+plot(NDVI_2020[[188]])
+
+```
+# Other geodata
+
+This geodata was already resampled to the footprint. 
+
+```{r Load resampled geodata }
+
+# VF
+VF = terra::rast("D:/Stenka_UWI/Topic_3/04_PROCESSED_DATA/20211021_geodata_ftp_resamp/TUCC/VF_TUCC_ftp.tif")
+plot(VF)
+
+# VH
+VH = terra::rast("D:/Stenka_UWI/Topic_3/04_PROCESSED_DATA/20211021_geodata_ftp_resamp/TUCC/VH_TUCC_ftp.tif")
+plot(VH)
+
+# BH
+BH = terra::rast("D:/Stenka_UWI/Topic_3/04_PROCESSED_DATA/20211021_geodata_ftp_resamp/TUCC/BH_TUCC_ftp.tif")
+plot(BH)
+
+# ISF
+ISF = terra::rast("D:/Stenka_UWI/Topic_3/04_PROCESSED_DATA/20211021_geodata_ftp_resamp/TUCC/ISF_TUCC_ftp.tif")
+plot(ISF)
+
+```
+
+
+# Kriged ETo
+
+## Original ETo data
+
+This is the half-hourly ETo data before it was kriged.
+
+```{r original ETo }
+
+load("D:/Stenka_UWI/Topic_3/04_PROCESSED_DATA/20211018_ETo/Halfhourly/ETo_halfhour_ws2.RData")
+
+glimpse(ETo_halfhour_ws2) # 35,088 obs. 
+
+# Which row is 26 July 2020, 14 UTC?
+
+
+which(ETo_halfhour_ws2$timestamp == as.POSIXct("2020-07-26 14:00:00", tz = "UTC"))
+# 9917
+# 2020-07-26 14:00:00
+
+```
+
+I am loading the kriged ETo as UTM.
+
+```{r Kriged ETo }
+
+ETo = readRDS(file = "D:/Stenka_UWI/Topic_3/04_PROCESSED_DATA/20211019_halfh_kriged_ETo/krg_var3.rds")
+
+length(ETo)
+
+plot(ETo[[9917]])
+ETo[[1]]
+
+```
+
+## Convert all ETo layers to terra format 
+
+```{r convert all ETo layers to terra format }
+
+# testETo = ETo[[1]]
+# ETo_terra = terra::rast(testETo)
+
+ETo_l_terra = pbapply::pblapply(
+  1:length(ETo), function(i)
+    terra::rast(ETo[[i]])
+)
+
+# |++++++++++++++++++++++++++++++++++++++++++++++++++| 100% elapsed=03m 13s
+
+```
+Saving the Spatraster list did not work! Just remake it every time. 
+
+# Terra resample
+
+`terra::resample` IS faster than the `terra::extract` approach (tested already).
+
+```{r terra resample }
+
+ETo_terra = terra::rast(ETo[[9917]])
+
+
+tic("resample ETo to NDVI")
+
+ETo_10m = terra::resample(x = ETo_terra,
+                          y = NDVI_2020,
+                          method = "bilinear")
+
+toc(log = TRUE) #Notes the current timer and computes elapsed time since the matching call to tic().
+
+tic.clearlog()
+
+# resample ETo to NDVI: 0.06 sec elapsed
+
+plot(ETo_terra)
+plot(ETo_10m)
+ETo_10m
+
+
+```
+# Import RF model 
+
+I am predicting in 2020. 
+Therefore, the model should be trained in **2019**. 
+
+```{r import RF model }
+
+mod = readRDS("D:/Stenka_UWI/Topic_3/05_RESULTS/20211101_RF_models/Train_2019/Mod_Train2019_RF.rds")
+
+plot(caret::varImp(mod))
+
+```
+# Make stack
+
+All predictors are here in footprint resolution. 
+
+```{r create raster stack }
+
+NDVI_20200726 = NDVI_2020[[207]]
+
+pred_stack = c(BH, ISF, VH, VF, NDVI_20200726, ETo_10m)
+
+names(pred_stack) = c("BH", "ISF", "VH", "VF", "NDVI_FP", "ETo_krg")
+
+pdf("D:/Stenka_UWI/Topic_3/06_R_SCRIPTS/20211122_map_TUCC_20/pred_stack.pdf", height = 8, width = 12 )
+plot(pred_stack)
+
+dev.off()
+
+pred_stack
+
+```
+
+# Df predict 
+
+# Turn raster into df
+
+## Terra
+First with terra:
+
+```{r turn into df terra }
+
+tic("SpatRaster to df")
+
+pred_stack_df = terra::as.data.frame(x = pred_stack, xy = TRUE)
+
+toc(log = TRUE) #Notes the current timer and computes elapsed time since the matching call to tic().
+
+tic.clearlog()
+
+# SpatRaster to df: 0.29 sec elapsed
+
+glimpse(pred_stack_df) # Rows: 37,973
+
+```
+
+```{r terra df to raster }
+
+
+
+test_df_to_spat = terra::rast(pred_stack_df, type = "xyz")
+
+pdf("D:/Stenka_UWI/Topic_3/06_R_SCRIPTS/20211122_map_TUCC_20/pred_stack.pdf", height = 8, width = 12,
+     pointsize = 20)
+
+plot(test_df_to_spat)
+
+dev.off()
+
+```
+
+
+# Predict on df 
+
+```{r predict on df }
+
+ # df with NAs removed
+pred_df = pred_stack_df
+# remove columns non-predictors 
+pred_df$x = NULL
+pred_df$y = NULL
+
+
+tic("predict on df")
+
+pred_ET = stats::predict(object = mod, pred_df)
+
+toc(log = TRUE) #Notes the current timer and computes elapsed time since the matching call to tic().
+
+tic.clearlog()
+
+
+# predict on df: 0.91 sec elapsed
+
+pred_stack_df$pred_ET = pred_ET
+
+```
+# Function with date 
+
+```{r function with date }
+
+# CAUTION: run for 1 year at a time! (Since my NDVI rasterstack are daily rasters for 1 year).
+
+# assumption: all geodata is already in longlat
+# assumption: all geodata (except for ETo) is already coregistered 
+
+# This function returns a dataframe (xyz) which can easily be converted to a raster later 
+
+# NDVI_stack, VH, BH, VF, ISF: Should be coregistered SpatRasters (10-m resolution)
+
+# NDVI_stack should be a "rasterstack" for a single year (one NDVI layer/day)
+
+# ETo_stack: ETo SpatRaster at 1-km resolution; a stack of half-hourly ETo rasters 
+
+# mod: Trained model 
+
+# date: "2020-01-01 00:00:00 UTC" for example, should be in UTC
+
+# ETo_df: Dataframe with original ETo prepared for kriging but not yet kriged "ETo_halfhour_ws2" 
+# ETo_df should have the same number of rows and same timestamp as the list of kriged ETo rasters. 
+# For example ETo_l_terra has 35,088 elements and ETo_halfhour_ws2 has 35088 obs. 
+# ETo_l_terra is kriged version of ETo_halfhour_ws2
+
+mapET_date = function(date, ETo_df, NDVI_stack, VH, BH, VF, ISF, ETo_stack, mod) {
+  
+  # select ETo based on date 
+  row_ETo = which(ETo_df$timestamp == as.POSIXct(date, tz = "UTC")) # row of this date
+  ETo = ETo_stack[[row_ETo]] # select ETo raster 
+  
+  # extract DOY for NDVI 
+  DOY = lubridate::yday(date) # day of year
+  NDVI = NDVI_stack[[DOY]] # select NDVI based on DOY 
+  
+  ETo_10m = terra::resample(x = ETo ,y = NDVI, method = "bilinear") # resample ETo to NDVI 
+  
+  pred_stack = c(BH, ISF, VH, VF, NDVI, ETo_10m) # create prediction raster stack
+  names(pred_stack) = c("BH", "ISF", "VH", "VF", "NDVI_FP", "ETo_krg") # rename stack
+  
+  pred_stack_mask = terra::mask(x = pred_stack, mask = NDVI ) # Mask out NAs (outside of Berlin)
+  
+  pred_stack_df = terra::as.data.frame(x = pred_stack_mask, xy = TRUE) # convert to dataframe 
+  
+  pred_df = pred_stack_df
+# remove columns that are not predictors 
+  pred_df$x = NULL
+  pred_df$y = NULL
+  
+  pred_ET = stats::predict(object = mod, pred_df)
+  
+  pred_stack_df$pred_ET = pred_ET # add predicted ET to df with coordinates
+  
+  pred_df_final = pred_stack_df %>% dplyr::select(x,y, pred_ET) # coords and predicted ET
+  
+  return(pred_df_final)
+  
+}
+
+```
+
+# Test mapping function 
+
+Here I am testing the function for a single timestamp.
+
+```{r test function mapET_date }
+
+tic("map ET")
+
+test_function2 = mapET_date(date = as.POSIXct("2020-07-26 14:00:00", tz = "UTC"),
+                       ETo_df = ETo_halfhour_ws2,
+                       NDVI_stack = NDVI_2020,
+                       VH = VH, BH = BH, VF = VF, ISF = ISF,
+                       ETo_stack = ETo_l_terra,
+                       mod = mod)
+
+toc(log = TRUE) #Notes the current timer and computes elapsed time since the matching call to tic().
+
+tic.clearlog()
+
+# map ET: 1.62 sec elapsed
+
+test_map = terra::rast(test_function2, type = "xyz")
+
+plot(test_map)
+
+```
+
+# Run function with lapply
+
+```{r Run lapply function }
+
+# 17520 is the last timestamp in 2019. 
+
+# 17521 is the first timestamp in 2020.
+
+
+map_list = pbapply::pblapply(17521:35088 , function(i)
+  mapET_date(
+    date = ETo_halfhour_ws2$timestamp[i],
+    ETo_df = ETo_halfhour_ws2,
+                       NDVI_stack = NDVI_2020,
+                       VH = VH, BH = BH, VF = VF, ISF = ISF,
+                       ETo_stack = ETo_l_terra,
+                       mod = mod
+  )
+  )
+
+#  |++++++++++++++++++++++++++++++++++++++++++++++++++| 100% elapsed=07h 15m 06s
+
+# save as rds file
+
+saveRDS(map_list, "D:/Stenka_UWI/Topic_3/05_RESULTS/20211117_ET_maps_towers/2020/TUCC/ETmaps_TUCC_2020.rds")
+
+map_list2 = readRDS("D:/Stenka_UWI/Topic_3/05_RESULTS/20211117_ET_maps_towers/2020/TUCC/ETmaps_TUCC_2020.rds")
+
+```
+
+I am testing the conversion to a raster. 
+
+```{r test convert to raster }
+
+tic("XYZ to raster")
+
+raster_ex = raster::rasterFromXYZ(map_list[[8000]])
+
+toc()
+
+tic.clearlog()
+
+# XYZ to raster: 2.22 sec elapsed
+
+plot(raster_ex)
+
+NDVI_normal = raster::raster(NDVI_20200726)
+
+stack_test = raster::stack(raster_ex, NDVI_normal) # great, stacking works 
+
+plot(stack_test)
+
+```
+
+

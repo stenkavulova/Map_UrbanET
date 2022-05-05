@@ -1,0 +1,281 @@
+---
+title: "2) Freddypro QC (TUCC)"
+author: "Stenka Vulova"
+date: "27 Oct. 2021"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+I am doing FREddypro data cleaning using `cleanFluxes`.
+
+# Libraries 
+
+```{r libraries, include = FALSE }
+
+library(sp)
+library(raster)
+library(rgdal)
+library(lubridate)
+library(maptools)
+library(ggplot2)
+library(plyr)
+library(dplyr)
+library(grid)
+library(spatstat)
+library(sf)
+library(readr)
+library(RColorBrewer)
+library(reshape2)
+library(scales)
+
+library(tictoc) # benchmarking 
+library(spatialEco) # for weighted_footprint function 
+
+library(openair)
+library(water)
+library(stats)
+library(zoo)
+library(water)
+
+library(MeTo)
+
+```
+
+The older package is no longer in the CRAN. 
+https://cran.r-project.org/src/contrib/Archive/FREddyPro/ 
+
+https://support.rstudio.com/hc/en-us/articles/219949047-Installing-older-versions-of-packages 
+
+```{r Freddypro library }
+
+# https://cran.r-project.org/src/contrib/Archive/FREddyPro/FREddyPro_1.0.tar.gz
+
+#packageurl <- "https://cran.r-project.org/src/contrib/Archive/FREddyPro/FREddyPro_1.0.tar.gz"
+#install.packages(packageurl, repos=NULL, type="source")
+
+library(FREddyPro)
+  
+```
+
+# Load data 
+
+```{r load data}
+
+
+load("/Users/stenkavulova/Dropbox/Stenka_UWI/Topic_3/04_PROCESSED_DATA/20211026_QC/TUCC/01_dataset_prep/TUCC_all.RData")
+
+names(TUCC_all)[names(TUCC_all) == "friction_velocity"] <- "u." # rename for Freddypro
+
+names(TUCC_all)[names(TUCC_all) == "air.temperature..degree_C...T_1000cm_Avg...56.17m."] <- "air_temperature"
+
+names(TUCC_all)[names(TUCC_all) == "relative.humidity......RH_1000cm_Avg...56.17m."] <- "RH"
+
+```
+
+# Create variables for the function 
+
+```{r create variables for the function }
+
+TUCC_clean = TUCC_all
+
+# variable for the function
+TUCC_clean$DOY <- lubridate::yday(TUCC_clean$timestamp)
+TUCC_clean$year <- lubridate::year(TUCC_clean$timestamp)
+TUCC_clean$month <- lubridate::month(TUCC_clean$timestamp)
+TUCC_clean$day <- lubridate::day(TUCC_clean$timestamp)
+TUCC_clean$hour <- lubridate::hour(TUCC_clean$timestamp)
+
+### variable for the clen function # should be deleted later
+TUCC_clean$date <- as.Date(TUCC_clean$timestamp)
+TUCC_clean$time <- strftime(TUCC_clean$timestamp, format="%H:%M:%S", tz = "UTC")
+TUCC_clean$VPD <-  (satVP(Tmean=TUCC_clean$air_temperature,interval='hour')*10)*(1-TUCC_clean$RH/100) 
+TUCC_clean$Tau <- 0.226  
+TUCC_clean$qc_Tau <- 0
+TUCC_clean$h2o_flux <- 0.6118  
+TUCC_clean$qc_h2o_flux <- 0  
+
+```
+
+# Sunrise and sunsetting function 
+
+Change lat and long to TUCC!
+
+```{r sunrise and sunset }
+
+ECsun <- suncalc::getSunlightTimes(date=date(TUCC_clean$timestamp), 
+                          lat=52.512283, lon=13.327855, tz = "UTC")
+
+```
+
+# Cleaning by 3 methods 
+
+This data cleaning relies on the `cleanFluxes` FREddypro function.  
+
+https://www.rdocumentation.org/packages/FREddyPro/versions/1.0/topics/cleanFluxes
+
+"The main function for cleaning and de-spiking post-processed fluxes. There are five ways to clean/de-spike gas fluxes based on 1) QC flags, 2) standard deviation of negative and positive fluxes, 2) flux distribution for each hour of the day, 4) mean AGC value of the IRGA and 5) u* filtering. There are also three ways to clean heat and water fluxes based on 1) QC flags, 2) a threshold value and on 3) standard deviation of negative and positive fluxes."
+
+Alby: "In fact I am keeping the 3 of them, but the model results are best using the clean2, the one that you highlighted." 
+
+ 
+`# LE clean results `   
+`EC_TUCCdata$LE.clean.thres <- EC_TUCCdata_clean1$LE`  
+`EC_TUCCdata$LE.clean.sd <- EC_TUCCdata_clean2$LE`  
+`EC_TUCCdata$LE.clean.ustar <- EC_TUCCdata_clean3$LE`"  
+
+Alby's model results were best with:  
+
+`ECdata_clean2=cleanFluxes(ECdata, gas="LE", sdCor=TRUE, sdTimes=5,`  
+                         ` distCor=TRUE, timesList=5,`  
+                         ` #thresholdList=list(H=c(-100,1000),LE=c(-100,1000)),`  
+                          `plot=FALSE, na.value="NA")`  
+                          
+Alby (10 Sept. 2020):  
+
+"For the qcFlag 2 and uStar cleaning, you are using thresholdList LE=c(-100,500), so it will set to NA the values lower than -100 and higher than 500, I will advise to take out the threshold in this cases or at least create a different variable (clean4).  
+
+`ECdata_clean1= FREddyPro::cleanFluxes(data = TUCC_clean, gas="LE", qcFlag=2,`
+                          `thresholdList=list(H=c(-100,500),LE=c(-100,500)),`
+                         ` plot=FALSE, na.value="NA")"`
+
+```{r Cleaning by 3 methods }
+
+# gas: A character input giving the name of the gas to clean. The default value is for CO2. 
+
+# qcFlag: The QC flag to clean. Default value is 2 using the Mauder and Foken (2004) flagging system. 
+
+# thresholdList: A list giving the threshold for which if greater and lower data will be removed. The list can include sensible heat (H), latent heat (LE), momentum flux (Tau), and water flux (h2o).
+
+# na.value: A string or a number showing NA values in the data set 
+
+#### clean1 ####
+
+# Actually just thresholds filtering - flag filter is applied for my data in all cases!
+# I always filter flag =2 out. 
+
+# I took out H filtering (filtering only for LE).
+
+# thresholdList
+#    A list giving the threshold for which if greater and lower data will be removed. The list can include sensible heat (H), latent heat (LE), momentum flux (Tau), and water flux (h2o). 
+
+ECdata_clean1= FREddyPro::cleanFluxes(data = TUCC_clean, gas="LE", qcFlag=2,
+                          thresholdList=list(LE=c(-100,500)),
+                          plot=FALSE, na.value="NA")
+
+#### clean2 ####
+
+# sdCor: Logical. If TRUE de-spiking based on standard deviation is applied. 
+
+# sdTimes: A number showing how many times the gas flux data have to be greater than the SD to remove them as spikes. The default value is 1 SD. 
+
+# distCor: Logical. If TRUE gas flux data are de-spiked using a distribution calculated for every half hour. 
+
+# For distributional cleaning, the half-hourly destribution using the complete dataset and the 5th and 95th quantiles are calculated. Values outside these quantiles are removed.
+
+ECdata_clean2=FREddyPro::cleanFluxes(TUCC_clean, gas="LE", sdCor=TRUE, 
+                                     sdTimes=5, 
+                          distCor=TRUE, timesList=5, 
+                          plot=FALSE, na.value="NA")
+
+#### clean3 ####
+
+# ustar: This input can be either logical or numeric. If logical and TRUE then ustar filtering is applied using the Papale et al. 2006 method. Sunset and sunrise times should also be provided for more accurate definition of the night time data. 
+
+# sunset: The time of sunset as a real number (0-23) 
+# sunrise: The time of sunrise as a real number (0-23) 
+
+ECdata_clean3=cleanFluxes(TUCC_clean, gas="LE", ustar = TRUE, 
+                          sunset= hour(ECsun$sunset),
+                          sunrise= hour(ECsun$sunrise),
+                          plot=FALSE, na.value="NA")
+
+
+```
+
+# Summary 
+
+```{r summary }
+
+summary(TUCC_clean$LE)
+summary(ECdata_clean1$LE)
+summary(ECdata_clean2$LE)
+summary(ECdata_clean3$LE)
+
+boxplot(TUCC_clean$LE)
+boxplot(ECdata_clean1$LE)
+boxplot(ECdata_clean2$LE)
+boxplot(ECdata_clean3$LE)
+
+```
+# Save final dataset
+
+Delete the variables created previously. 
+
+I renamed LE.clean.flag as LE.clean.thres. The code is the "threshold" code:  
+
+`ECdata_clean1= FREddyPro::cleanFluxes(data = TUCC_clean, gas="LE", qcFlag=2,`  
+                        `  thresholdList=list(LE=c(-100,500)),`  
+                         ` plot=FALSE, na.value="NA")`
+                         
+QC flag will always be used to filter for flag 2! (regardless of QC scenario)
+
+## Create df 
+
+```{r Create df }
+
+TUCC_cleaned = TUCC_clean
+
+# LE clean results  
+TUCC_cleaned$LE.clean.thres <- ECdata_clean1$LE
+TUCC_cleaned$LE.clean.sd <- ECdata_clean2$LE
+TUCC_cleaned$LE.clean.ustar <- ECdata_clean3$LE
+
+str(TUCC_cleaned)
+
+```
+
+## Delete columns 
+
+Delete the columns used for QC. 
+
+```{r Delete columns }
+
+# variable for the function
+TUCC_cleaned$DOY <- NULL
+TUCC_cleaned$year <- NULL
+TUCC_cleaned$month <- NULL
+TUCC_cleaned$day <- NULL
+TUCC_cleaned$hour <- NULL
+
+### variable for the clen function # should be deleted later
+TUCC_cleaned$date <- NULL
+TUCC_cleaned$time <- NULL
+TUCC_cleaned$VPD <-  NULL
+TUCC_cleaned$Tau <- NULL
+TUCC_cleaned$qc_Tau <- NULL
+TUCC_cleaned$h2o_flux <- NULL
+TUCC_cleaned$qc_h2o_flux <- NULL
+
+str(TUCC_cleaned)
+
+
+# save the data
+#save(TUCC_cleaned, file = "/Users/stenkavulova/Dropbox/Stenka_UWI/Topic_3/04_PROCESSED_DATA/20211026_QC/TUCC/02_Freddypro_QC/TUCC_cleaned.RData")
+
+#write.csv(TUCC_cleaned, file = "/Users/stenkavulova/Dropbox/Stenka_UWI/Topic_3/04_PROCESSED_DATA/20211026_QC/TUCC/02_Freddypro_QC/02_TUCC_cleaned_Freddypro.csv", row.names = FALSE)
+```
+
+
+Let's plot the data. 
+
+```{r ggplot cleaned }
+
+ggplot(TUCC_cleaned, aes(x=timestamp))+
+  geom_point(aes(y=LE), colour="red")+
+  geom_point(aes(y=LE.clean.thres), colour="blue")+
+  geom_point(aes(y=LE.clean.sd), colour="green")
+#  geom_point(aes(y=LE.clean.ustar), colour="black")
+
+```
+

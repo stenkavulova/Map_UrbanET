@@ -1,0 +1,174 @@
+---
+title: "Preparing dataframe for modelling"
+author: "Stenka Vulova"
+date: "1 Nov. 2021"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+I am preparing the dataframe for modelling.
+
+# Libraries 
+
+```{r libraries, include = FALSE }
+
+library(sp)
+library(raster)
+library(rgdal)
+library(lubridate)
+library(maptools)
+library(ggplot2)
+library(plyr)
+library(dplyr)
+library(grid)
+library(spatstat)
+library(sf)
+library(readr)
+library(RColorBrewer)
+library(reshape2)
+library(scales)
+
+library(tictoc) # benchmarking 
+library(spatialEco) # for weighted_footprint function 
+
+library(openair)
+library(water)
+library(stats)
+library(zoo)
+library(water)
+
+library(MeTo)
+
+# packages for this code 
+library(tidyverse)
+library(corrr)
+#library(lubridate)
+
+```
+
+# Load data 
+
+I am loading the final data, with all preprocessing already applied. 
+
+```{r load data }
+
+load("/Users/stenkavulova/Dropbox/Stenka_UWI/Topic_3/04_PROCESSED_DATA/20211026_QC/ROTH/06_add_NDVI/ROTH_w_NDVI.RData")
+ROTH_w_NDVI$Tower = "ROTH"
+
+load("/Users/stenkavulova/Dropbox/Stenka_UWI/Topic_3/04_PROCESSED_DATA/20211026_QC/TUCC/06_add_NDVI/TUCC_w_NDVI.RData")
+TUCC_w_NDVI$Tower = "TUCC"
+
+both = dplyr::full_join(ROTH_w_NDVI, TUCC_w_NDVI)
+
+```
+
+
+# Reduce columns 
+
+We are keeping only the predictors and the "timestamp" column. 
+I will include the "Tower" column (just in case - for reference).
+
+I am using Urban Atlas BH "BH" (as it is open) not Berlin Environmental Atlas building height "BH_BEA." 
+
+The predictors are:  
+
+* Kriged ETo
+* Normalized Difference Vegetation Index (NDVI) (Sentinel-2) (10-m resolution) 
+* Building height (BH) (Urban Atlas) (used in Vulova et al. 2020) (10-m resolution) 
+* Vegetation height (VH) (used in Vulova et al. 2021) (1-m resolution) 
+* Impervious surface fraction (ISF) (Urban Atlas) (polygons) 
+* Vegetation fraction 
+
+```{r remove columns }
+
+both2 = both %>%
+  select(timestamp, ET, ETo_krg, NDVI_FP, BH, VH, ISF, VF, Tower)
+
+min(both2$timestamp)
+max(both2$timestamp)
+
+summary(both2)
+
+```
+
+# Remove all NAs
+
+We now need to remove all NAs. 
+
+```{r remove NAs }
+
+rem = na.omit(both2)
+
+summary(rem)
+nrow(rem) # 32266
+
+```
+
+# Order by timestamp 
+
+We need to order the data by the timestamp. This is a necessary step for the CNN (temporal structure in data). **Old code for Vulova et al. 2021**
+
+```{r order by timestamp }
+
+# order dataset by date and time 
+rem = rem[order(rem$timestamp), ]
+
+```
+
+## Save data 
+
+This data is now model-ready. I am saving it. 
+
+```{r Save data }
+
+both_ready = rem
+
+#write.csv(both_ready, file = "/Users/stenkavulova/Dropbox/Stenka_UWI/Topic_3/04_PROCESSED_DATA/20211026_QC/both/both_ready.csv", row.names = FALSE)
+
+#save(both_ready, file = "/Users/stenkavulova/Dropbox/Stenka_UWI/Topic_3/04_PROCESSED_DATA/20211026_QC/both/both_ready.RData")
+
+glimpse(both_ready)
+
+```
+
+# Split into years 
+
+2019 will be used for testing and 2020 for training (and vice versa). 
+So I will save my datasets split into years for further convenience. 
+
+```{r split into years}
+
+both_ready$Year = lubridate::year(both_ready$timestamp)
+
+both_2019 = subset(both_ready, Year == 2019)
+both_2020 = subset(both_ready, Year == 2020)
+
+nrow(both_2019)
+nrow(both_2020)
+
+nrow(both_2019) + nrow(both_2020)
+
+both_2019$Year = NULL
+both_2020$Year = NULL
+
+```
+
+## Save 
+
+```{r save years }
+
+#### 2019 ####
+
+#write.csv(both_2019, file = "/Users/stenkavulova/Dropbox/Stenka_UWI/Topic_3/04_PROCESSED_DATA/20211026_QC/both/both_2019.csv", row.names = FALSE)
+
+#save(both_2019, file = "/Users/stenkavulova/Dropbox/Stenka_UWI/Topic_3/04_PROCESSED_DATA/20211026_QC/both/both_2019.RData")
+
+#### 2020 ####
+
+#write.csv(both_2020, file = "/Users/stenkavulova/Dropbox/Stenka_UWI/Topic_3/04_PROCESSED_DATA/20211026_QC/both/both_2020.csv", row.names = FALSE)
+
+#save(both_2020, file = "/Users/stenkavulova/Dropbox/Stenka_UWI/Topic_3/04_PROCESSED_DATA/20211026_QC/both/both_2020.RData")
+
+```
+

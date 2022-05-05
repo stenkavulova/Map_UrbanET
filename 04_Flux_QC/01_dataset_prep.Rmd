@@ -1,0 +1,250 @@
+---
+title: "Data preparation (TUCC)"
+author: "Stenka Vulova"
+date: "26 Oct. 2021"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+I am preparing TUCC data for modelling. I am adapting my code from last year (Vulova et al. 2021).
+
+* I decided to model at a half-hourly scale (to avoid gap-filling, which is another modeling technique that does not incorporate the footprint information). 
+
+# Libraries 
+
+```{r libraries, include = FALSE }
+
+library(sp)
+library(raster)
+library(rgdal)
+library(lubridate)
+library(maptools)
+library(ggplot2)
+library(plyr)
+library(dplyr)
+library(grid)
+library(spatstat)
+library(sf)
+library(readr)
+library(RColorBrewer)
+library(reshape2)
+library(scales)
+
+library(tictoc) # benchmarking 
+library(spatialEco) # for weighted_footprint function 
+
+library(openair)
+library(water)
+library(stats)
+library(zoo)
+
+```
+
+# Data preprocessing 
+
+I have to combine several datasets:  
+
+* results from footprint extraction (this time, first guess)
+* eddy tower data 
+* ETo extracted from kriged ETo grids (calculated from DWD data)
+
+## Static footprints
+
+The footprints are already half-hourly. 
+
+```{r Load static footprints footprints }
+
+load("/Users/stenkavulova/Dropbox/Stenka_UWI/Topic_3/04_PROCESSED_DATA/20211022_static_ftp/TUCC/FP_TUCC_static_2019.RData")
+load("/Users/stenkavulova/Dropbox/Stenka_UWI/Topic_3/04_PROCESSED_DATA/20211022_static_ftp/TUCC/FP_TUCC_static_2020.RData")
+
+FP_TUCC = dplyr::full_join(FP_TUCC_GIS_2019, FP_TUCC_GIS_2020)
+
+FP_TUCC$Tower = "TUCC"
+
+names(FP_TUCC)[names(FP_TUCC) == 'BH_TUCC_ftp'] <- 'BH'
+names(FP_TUCC)[names(FP_TUCC) == 'BH_BEA_TUCC_ftp'] <- 'BH_BEA'
+names(FP_TUCC)[names(FP_TUCC) == 'VH_TUCC_ftp'] <- 'VH'
+names(FP_TUCC)[names(FP_TUCC) == 'ISF_TUCC_ftp'] <- 'ISF'
+names(FP_TUCC)[names(FP_TUCC) == 'VF_TUCC_ftp'] <- 'VF'
+
+head(FP_TUCC$timestamp)
+
+FP_TUCC$timestamp = as.POSIXct(FP_TUCC$timestamp, tz = "UTC")
+
+```
+
+## EC data 
+
+This eddy covariance (EC) data already has zd calculated (it is *first guess* zd for this publication).
+The EC data is already half-hourly. 
+
+```{r Load EC data }
+
+load("/Users/stenkavulova/Dropbox/Stenka_UWI/Topic_3/04_PROCESSED_DATA/20211014_zd_firstguess/TUCC/20211014_TUCC_final.RData")
+
+TUCC_final$timestamp = as.POSIXct(TUCC_final$timestamp, tz = "UTC")
+
+TUCC_final$Year = lubridate::year(TUCC_final$timestamp)
+
+TUCC_final = subset(TUCC_final, Year == 2019 | Year == 2020)
+
+head(TUCC_final$timestamp) # GMT 
+
+```
+
+## ETo extracted from kriged ETo
+
+* Interpolating ETo using ordinary kriging on a half-hourly scale
+
+* DWD stations within 70 km of Berlin -> 10 DWD stations with the data needed for ETo
+
+* Then, ETo is extracted from the resulting kriged rasters at the coordinates of the two EC towers. These extracted ETo values are used to train the ML models. 
+
+The ETo data is already half-hourly. 
+
+```{r load extracted ETo }
+
+load("/Users/stenkavulova/Dropbox/Stenka_UWI/Topic_3/04_PROCESSED_DATA/20211019_halfh_kriged_ETo/Towers_extracted/Extracted_ETo_TUCC.RData")
+
+summary(Extracted_ETo_TUCC)
+
+```
+ 
+# Precipitation data 
+
+var_name = RS_IND, occurrence of precipitation, 0 no precipitation / 1 precipitation fell (prec_h)  
+
+This data (from DWD) is hourly.
+
+I decided to download the DWD data from the source, to have the correct timezone (UTC).
+
+```{r load P data }
+
+Prec <- read_delim("/Users/stenkavulova/Dropbox/Stenka_UWI/Topic_3/03_RAW_DATA/DWD/precipitation/stundenwerte_RR_00430_19950901_20201231_hist/produkt_rr_stunde_19950901_20201231_00430.txt", 
+                       ";", escape_double = FALSE, 
+                       col_types = cols(MESS_DATUM = col_datetime(format="%Y%m%d%H")), 
+                       trim_ws = TRUE)
+
+# Subset to station closest to TUCC 
+# Berlin- Tegel (5.94 km distance from TUCC)
+
+# 00430 19950901 20210505             36     52.5644   13.3082 Berlin-Tegel                             Berlin
+
+Prec_h = Prec %>% 
+  select(MESS_DATUM, RS_IND)
+
+names(Prec_h)[names(Prec_h) == 'MESS_DATUM'] <- 'timestamp'
+names(Prec_h)[names(Prec_h) == 'RS_IND'] <- 'precip.no.yes'
+
+head(Prec_h$timestamp) # UTC! Looks good. 
+# All dates given in this directory are in UTC
+# https://opendata.dwd.de/climate_environment/CDC/observations_germany/climate/hourly/precipitation/historical/DESCRIPTION_obsgermany_climate_hourly_precipitation_historical_en.pdf 
+
+Prec_h$Year = lubridate::year(Prec_h$timestamp)
+
+Prec_h = subset(Prec_h, Year == 2019 | Year == 2020)
+
+summary(Prec_h)
+
+# Missing values are marked as -999.
+
+Prec_h = Prec_h %>% 
+    mutate(precip.no.yes = na_if(precip.no.yes, -999))
+
+summary(Prec_h)
+
+```
+
+## Add half-hour timestamp
+
+```{r Half hour timestamp }
+
+head(TUCC_final$timestamp)
+min(TUCC_final$timestamp)
+max(TUCC_final$timestamp)
+
+# https://stackoverflow.com/questions/16787038/insert-rows-for-missing-dates-times
+
+ts_halfhour = seq.POSIXt(min(TUCC_final$timestamp), as.POSIXlt(max(TUCC_final$timestamp)), by="30 mins")
+
+ts_halfhour = format.POSIXct(ts_halfhour,"%Y-%m-%d %H:%M:%S")
+
+df_halfhour <- data.frame(timestamp=ts_halfhour)
+
+# There is no time difference between Greenwich Mean Time and Coordinated Universal Time
+df_halfhour$timestamp = as.POSIXct(df_halfhour$timestamp, format = "%Y-%m-%d %H:%M:%S", tz = "GMT")
+
+nrow(df_halfhour)
+nrow(TUCC_final)
+
+identical(df_halfhour$timestamp, TUCC_final$timestamp) # TRUE
+
+P_halfhour = dplyr::full_join(df_halfhour, Prec_h )
+
+P_halfhour$Year = NULL 
+
+```
+
+## Disaggregate precip.no.yes to halfhourly 
+
+I will take another approach for precip.no.yes data: I will repeat the value for each half hour. 
+
+Alby: "I didn't test to desegregate for 30min the DWD data, but it is possible, with the `timeAverage` function, if you set avg.time="30 min", it will repeat the value of the DWD for the two half."  
+
+https://davidcarslaw.github.io/openair/reference/timeAverage.html  
+
+**fill** - When time series are expanded i.e. when a time interval is less than the original time series, data are ‘padded out’ with NA. To ‘pad-out’ the additional data with the first row in each original time interval, choose fill = TRUE.
+
+```{r make precip.no.yes half hourly }
+
+# the name required for timestamp and wind_direction
+# "date" = the timestamp
+
+names(Prec_h)[names(Prec_h) == "timestamp"] <- "date"
+
+Prec_h= openair::timeAverage(Prec_h,
+                                      avg.time = "30 min", 
+                                      fill = TRUE )
+
+names(Prec_h)[names(Prec_h) == "date"] <- "timestamp"
+
+Prec_h$Year = NULL
+
+summary(Prec_h)
+
+```
+# Join data together 
+
+Now I want to join all data together: static footprints, EC data, extracted ETo, and precipitation data. 
+
+Eventually, I will add the **NDVI footprint results**, but they are not ready yet. 
+
+## Join all
+
+```{r join all}
+
+# check timezones are all UTC. 
+head(Extracted_ETo_TUCC$timestamp) # UTC
+head(Prec_h$timestamp) # UTC
+head(TUCC_final$timestamp) #GMT
+head(FP_TUCC$timestamp) # GMT
+
+TUCC_all = plyr::join_all( dfs = list(Extracted_ETo_TUCC,
+                                      Prec_h,
+                                      TUCC_final,
+                                      FP_TUCC), type = "full")
+
+head(TUCC_all$timestamp) # UTC
+TUCC_all$Year = NULL
+
+# save data 
+
+#save(TUCC_all, file = "/Users/stenkavulova/Dropbox/Stenka_UWI/Topic_3/04_PROCESSED_DATA/20211026_QC/TUCC/01_dataset_prep/TUCC_all.RData")
+
+#write.csv(TUCC_all, file = "/Users/stenkavulova/Dropbox/Stenka_UWI/Topic_3/04_PROCESSED_DATA/20211026_QC/TUCC/01_dataset_prep/TUCC_all.csv", row.names = FALSE)
+
+summary(TUCC_all)
+
+```
+

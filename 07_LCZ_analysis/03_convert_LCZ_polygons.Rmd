@@ -1,0 +1,111 @@
+---
+title: "LCZ (LCZ Generator)"
+author: "Stenka Vulova"
+date: "17 Feb. 2022"
+output: html_document
+---
+
+# Libraries 
+
+```{r libraries, include = FALSE }
+
+library(sp)
+library(raster)
+library(rgdal)
+library(lubridate)
+library(maptools)
+library(ggplot2)
+library(tidyr)
+library(plyr)
+library(dplyr)
+library(RColorBrewer)
+library(reshape2)
+library(scales)
+library(readr)
+library(rgeos)
+
+library(grid)
+library(spatstat)
+library(sf)
+
+library(zoo)
+library(tictoc) # benchmarking
+
+library(pbapply)
+
+library(terra)
+
+```
+
+# Import the raster
+
+Gaussian-filtered version (100-m res)
+
+"The resulting LCZ map provided to the user is based on allTAs (100% of the TA polygons) and input features. A filteredversion is also provided using the morphological Gaussian filterdescribed in more detail inDemuzere et al. (2020a). Thisis preferred over the WUDAPT’s traditional majority post-classification, as it accounts for the distance from the centerof the kernel and differences in the typical patch size betweenclasses. For example, linear features like rivers are typicallyremoved by the majority filter. " (Demuzere et al. 2021)
+
+"The LCZ map, its Gaussian-filtered version and the probability map are provided to theuser as a single .tifwith three bands: “lcz,” “lczFilter,” and“classProbability,” respectively." (Demuzere et al. 2021)  
+
+```{r import LCZ }
+
+# LCZ_Gen_Fenner_filter= LCZ[[2]]
+
+LCZ = terra::rast("D:/Stenka_UWI/Topic_3/03_RAW_DATA/LCZ_Fenner_Generator/LCZ_Gen_Fenner_filter.tif")
+
+terra::plot(LCZ)
+
+```
+
+# Polygonize 
+
+Let's do it with `terra`. 
+
+```{r convert to polygons }
+
+tic("as.polygons")
+
+LCZ_poly = terra::as.polygons(x = LCZ, trunc = TRUE,
+                                     dissolve = TRUE,
+                                     values = TRUE,
+                                     na.rm = TRUE, 
+                                     extent = FALSE )
+
+toc()
+
+tic.clearlog()
+
+# as.polygons: 0.88 sec elapsed
+
+#terra::plot(LCZ_poly)
+
+LCZ_poly
+
+values_LCZ = terra::values(LCZ_poly)
+
+values_LCZ
+
+#0				
+#2				
+#4				
+#5				
+#6				
+#8				
+#9				
+#11				
+#12				
+#13	
+#14				
+#16				
+#17	
+
+# LCZ 4 is in there. (open highrise)
+
+# Checking Fenner et al. 2017:
+# Missing should be: 1, 3, 7, 10, and E 
+# Matches this well
+
+#terra::writeVector(x = LCZ_poly, "D:/Stenka_UWI/Topic_3/04_PROCESSED_DATA/20220217_LCZ_shape_Gene/LCZ_Generator_filter.shp",
+#                   filetype = "ESRI Shapefile")
+
+```
+
+"LCZ  1  (compact  high-rise),  3  (compactlow-rise), 7 (lightweight low-rise), 10 (heavy industry),and E (bare rock or paved) do not occur (Fig.2)." (Fenner et al. 2017)

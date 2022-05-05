@@ -1,0 +1,189 @@
+---
+title: "Train RF for ET mapping (2019)"
+author: "Stenka Vulova"
+date: "1 Nov. 2021"
+output: html_document
+---
+
+I am training with the year 2019.
+
+# Libraries 
+
+```{r libraries, echo = FALSE }
+
+library(sp)
+library(raster)
+library(rgdal)
+library(lubridate)
+library(maptools)
+library(ggplot2)
+library(tidyr)
+library(plyr)
+library(dplyr)
+library(FSA) # Dunns test
+library(RColorBrewer)
+library(reshape2)
+library(scales)
+library(hydroGOF) # performance metrics
+
+library(janitor)
+
+# machine learning libraries 
+library(caret)
+#library(CAST)
+library(doSNOW) # do training in parallel
+library(doParallel) 
+#library(gbm)
+library(AppliedPredictiveModeling)
+library(randomForest)
+#library(nnet) # avNNet
+
+# Benchmarking 
+library(tictoc)
+
+```
+
+# Load training data 
+
+I want to train with 2019 data/ test with 2020 data.
+
+```{r load training dataset }
+
+load("/Users/stenkavulova/Dropbox/Stenka_UWI/Topic_3/04_PROCESSED_DATA/20211026_QC/both/both_2019.RData")
+#load("/Users/stenkavulova/Dropbox/Stenka_UWI/Topic_3/04_PROCESSED_DATA/20211026_QC/both/both_2020.RData")
+
+glimpse(both_2019)
+
+summary(both_2019)
+
+```
+
+## Remove columns 
+
+* I am removing the "Tower" and "Year" column.
+
+```{r less columns }
+
+both_ready = both_2019 
+both_ready$Tower = NULL
+both_ready$timestamp = NULL
+
+```
+
+# Parallel processing 
+
+**Benchmarking**:
+Concerning benchmarking, I have decided to use the `tictoc` package.  
+https://www.r-bloggers.com/5-ways-to-measure-running-time-of-r-code/  
+https://www.jumpingrivers.com/blog/timing-in-r/ 
+
+***
+
+`saveRDS` is highly recommended for saving models for later use (instead of .RData):  
+https://stackoverflow.com/questions/14761496/saving-and-loading-a-model-in-r 
+https://www.r-bloggers.com/a-better-way-of-saving-and-loading-objects-in-r/ 
+https://www.mydatahack.com/how-to-save-machine-learning-models-in-r/ 
+
+"saveRDS() does not save the object name. Therefore, when you load it back, you can name it whatever you want (see below). While you can save many objects into a file with save(), saveRDS() only saves one object at a time as it is a lower-level function. saveRDS() also serialise an R object, which some people say better. But, most of the time, it really doesn’t matter. The model saved with save() and saveRDS() is the same. You will get the same predictive outcome."  
+
+
+
+```{r Parallel processing }
+
+# Use the doSNOW package to enable caret to train in parallel.
+# While there are many package options in this space, doSNOW
+# has the advantage of working on both Windows and Mac OS X.
+#
+# Create a socket cluster using 10 processes. 
+#
+# NOTE - Tune this number based on the number of cores/threads 
+# available on your machine!!!
+
+# Calculate the number of cores
+# Attempt to detect the number of CPU cores on the current host.
+no_cores <- detectCores() - 2
+no_cores
+
+cl <- makeCluster(no_cores, type = "SOCK")
+cl
+
+# Register cluster so that caret will know to train in parallel.
+registerDoSNOW(cl) # use parallel "RStudios" 
+
+```
+
+# Training RF
+
+"The number of predictor variables randomly selected at each split (mtry) was tuned for each value between two and the number of input variables, following the suggestion of Kuhn and Johnson (2013)." (Meyer et al. 2016)  
+
+We have 6 input variables this time. 
+
+```{r Training RF }
+
+# non-uniform 'Rounding' sampler used
+
+ncol(both_ready) # includes outcome ET 
+
+# Tuning grid
+RFGrid <-  expand.grid(mtry = c(seq(2, ncol(both_ready)  - 1,1)))
+
+# use similar trainControl as Hanna Meyer
+# 10-fold cross-validation
+
+ctrl <- trainControl(method = "cv", # k-fold cross-validation
+                     number = 10, # 10 folds 
+                       savePredictions = TRUE,
+                       verboseIter = TRUE,
+                       returnResamp = "all")
+
+# Always place the tic before the set.seed for standardized benchmarking 
+
+tic("RF model training benchmarking") # tic - Starts the timer and stores the start time and the message on the stack.
+
+# Set the number seed prior to calling training repeatedly to get the same resamples across calls. 
+set.seed(1912)
+
+mod <- caret::train(ET ~ .,
+                      data= both_ready,
+               method="rf", # Random Forest
+               preProc = c("center", "scale"),
+               tuneGrid = RFGrid, # tuning grid
+               trControl = ctrl,
+               importance = TRUE,
+               verbose = TRUE)
+
+# Always place the toc() after caret::train
+toc(log = TRUE) #Notes the current timer and computes elapsed time since the matching call to tic(). When quiet is FALSE, prints the associated message and the elapsed time.
+
+# reset the tictoc log 
+tic.clearlog()
+
+print(mod)
+
+plot(mod)
+
+# Extract lowest RMSE from the model tuning 
+# https://stackoverflow.com/questions/32701928/extract-winning-rmse-from-optimal-r-caret-model 
+getTrainPerf(mod)
+
+plot(varImp(mod))
+
+## RF model training benchmarking: 906.54 sec elapsed (15 min.)
+
+```
+
+# Save model 
+
+```{r Save model }
+
+## save model as RDS 
+
+#saveRDS(mod, "/Users/stenkavulova/Dropbox/Stenka_UWI/Topic_3/05_RESULTS/20211101_RF_models/Train_2019/Mod_Train2019_RF.rds")
+
+mod2 = readRDS("/Users/stenkavulova/Dropbox/Stenka_UWI/Topic_3/05_RESULTS/20211101_RF_models/Train_2019/Mod_Train2019_RF.rds")
+
+mod2
+
+mod
+
+```

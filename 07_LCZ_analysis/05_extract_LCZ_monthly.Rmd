@@ -1,0 +1,230 @@
+---
+title: "Extract monthly (LCZ)"
+author: "Stenka Vulova"
+date: "18 Feb. 2022"
+output: html_document
+---
+
+# Libraries 
+
+```{r libraries, include = FALSE }
+
+library(sp)
+library(raster)
+library(rgdal)
+library(lubridate)
+library(maptools)
+library(ggplot2)
+library(tidyr)
+library(plyr)
+library(dplyr)
+library(RColorBrewer)
+library(reshape2)
+library(scales)
+library(readr)
+library(rgeos)
+
+library(terra)
+
+library(grid)
+library(spatstat)
+library(sf)
+
+library(zoo)
+library(tictoc) # benchmarking
+
+library(pbapply)
+
+library(exactextractr)
+
+```
+
+
+# Load monthly ET
+
+## Load
+
+```{r load maps monthly }
+
+# example file name
+# ETmonthly_2019_01
+
+filenames = list.files( path = "D:/Stenka_UWI/Topic_3/05_RESULTS/20220128_monthly_ET_maps", pattern = '^ETmonthly_2019',
+                        full.names = TRUE )
+
+length(filenames) # 12
+
+head(filenames)
+tail(filenames)
+
+# Load as rast 
+
+l = lapply(filenames, raster::raster)
+
+raster::plot(l[[6]], col = colorRampPalette(c("dark red", "red3", "orange1", 'lightgoldenrod1', "seagreen1", "dodgerblue4", "blue4"))(255))
+
+# Make a stack 
+
+brick = raster::brick(l)
+raster::plot(brick[[6]])
+
+```
+
+# LCZ 
+
+```{r LCZ shapefile }
+
+LCZ = rgdal::readOGR(dsn = "D:/Stenka_UWI/Topic_3/04_PROCESSED_DATA/20220217_LCZ_shape_Gene", layer = "LCZ_Berlin",
+                    verbose = TRUE)
+
+# 13 features 
+
+# convert to sf
+
+LCZ_sf = sf::st_as_sf(LCZ)
+
+
+```
+
+# Extract 
+
+```{r xtract }
+
+# Test with one layer
+
+#library("exactextractr")
+
+tic("extract")
+
+# Calculate data frame of summary stats
+ex_LCZ = exact_extract(x = brick[[6]], y = LCZ_sf, fun = c("mean", "median", "min", "max", "stdev"))
+
+toc()
+
+tic.clearlog()
+
+# extract: 25.07 sec elapsed
+
+
+glimpse(ex_LCZ)
+
+ex_LCZ2 = cbind(LCZ_sf$LCZ_Gen_Fe, ex_LCZ)
+
+```
+
+# RUn with pbapply
+
+```{r pbapply 2 }
+
+ex_LCZ_months = pbapply::pblapply(1:12, function(i)
+  exact_extract(x = brick[[i]], y = LCZ_sf, fun = c("mean", "median", "min", "max", "stdev") , progress = FALSE )
+  )
+
+# |++++++++++++++++++++++++++++++++++++++++++++++++++| 100% elapsed=05m 01s
+
+
+
+```
+# Combine with LCZ
+
+## Test
+
+```{r combine TEST }
+
+month = 7
+
+ex_LCZ_TEST = ex_LCZ_months[[month]]
+glimpse(ex_LCZ_TEST)
+
+
+ex_LCZ_TEST = cbind(LCZ_sf$LCZ_Gen_Fe, ex_LCZ_TEST)
+
+ex_LCZ_TEST$Month = month
+
+glimpse(ex_LCZ_TEST)
+summary(ex_LCZ_TEST)
+
+```
+## Function 
+
+```{r function combine }
+
+# ex_LCZ: ex_LCZ_months; list of 12 dataframes (months); extracted summary statistics using exact_extract
+# LCZ_sf: the sf polygon dataframe used to extract
+# month: month, 1-12
+
+combine_ex_LCZ = function(ex_LCZ, LCZ_sf, month) {
+  ex_LCZ_new = ex_LCZ[[month]] # Subset to month
+
+  ex_LCZ_new = cbind(LCZ_sf$LCZ_Gen_Fe, ex_LCZ_new) # Add LCZ column
+
+  ex_LCZ_new$Month = month # Add month column
+  
+  return(ex_LCZ_new)
+  
+}
+
+```
+
+## Test single 
+
+```{r Test single }
+
+tic("combine_ex_LCZ")
+
+ex_LCZ_8 = combine_ex_LCZ(ex_LCZ = ex_LCZ_months, 
+                             LCZ_sf = LCZ_sf,
+                             month = 8)
+
+toc()
+
+tic.clearlog()
+
+# combine_ex_LCZ: 0.13 sec elapsed
+
+glimpse(ex_LCZ_8)
+
+```
+## Lapply combine 
+
+```{r lapply combine }
+
+tic("combine_ex_LCZ")
+
+l_LCZdfs = pbapply::pblapply(1:12, function(i)
+  
+  combine_ex_LCZ(ex_LCZ = ex_LCZ_months, 
+                             LCZ_sf = LCZ_sf,
+                             month = i)
+  
+)
+
+toc()
+
+tic.clearlog()
+
+# combine_ex_LCZ: 0.13 sec elapsed
+
+```
+Check the result 
+
+```{r check result }
+
+glimpse(l_LCZdfs[[3]])
+
+# join all
+
+LCZ_stats_month = plyr::join_all(dfs = l_LCZdfs, type = "full")
+
+names(LCZ_stats_month)[names(LCZ_stats_month) == 'LCZ_sf$LCZ_Gen_Fe'] <- 'LCZ'
+
+
+# save as RData
+
+#save(LCZ_stats_month, file = "D:/Stenka_UWI/Topic_3/05_RESULTS/20220218_LCZ_summ_stats/Monthly/LCZ_stats_month.RData")
+
+#write.csv(LCZ_stats_month, file = "D:/Stenka_UWI/Topic_3/05_RESULTS/20220218_LCZ_summ_stats/Monthly/LCZ_stats_month.csv",
+#          row.names = FALSE)
+
+```
+

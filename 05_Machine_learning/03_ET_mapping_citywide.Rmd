@@ -1,0 +1,352 @@
+---
+title: "Mapping ET (city-wide)"
+author: "Stenka Vulova"
+date: "24 Jan. 2022"
+output: html_document
+---
+
+# Libraries 
+
+```{r libraries, include = FALSE }
+
+library(sp)
+library(raster)
+library(rgdal)
+library(lubridate)
+library(maptools)
+library(ggplot2)
+library(tidyr)
+library(plyr)
+library(dplyr)
+library(RColorBrewer)
+library(reshape2)
+library(scales)
+library(readr)
+library(rgeos)
+
+library(grid)
+library(spatstat)
+library(sf)
+
+library(zoo)
+library(tictoc) # benchmarking
+
+library(pbapply)
+
+library(spatialEco) # for weighted_footprint function 
+
+library(caret)
+library(doSNOW) # do training in parallel
+library(doParallel) 
+library(randomForest)
+
+#devtools::install_github("AlbyDR/rSCOPE")
+
+#library(rSCOPE)
+
+library(SpaDES.tools) # splitRaster
+
+library(terra)
+
+```
+
+# NDVI 
+
+```{r load NDVI }
+
+NDVI_2019 = terra::rast("D:/Stenka_UWI/Topic_3/04_PROCESSED_DATA/20211004_NDVI_interpolated/2019/NDVI_Berlin_daily_2019.grd")
+
+NDVI_2019
+
+terra::plot(NDVI_2019[[177]])
+
+NDVI_2019[[177]]
+
+```
+# Other geodata
+
+This geodata was already resampled to NDVI. 
+
+```{r Load resampled geodata }
+
+# VF
+VF = terra::rast("D:/Stenka_UWI/Topic_3/04_PROCESSED_DATA/20211101_geodata_resamp/02_resample/VF_proj.tif")
+plot(VF)
+
+# VH
+VH = terra::rast("D:/Stenka_UWI/Topic_3/04_PROCESSED_DATA/20211101_geodata_resamp/02_resample/VH_proj.tif")
+plot(VH)
+
+# BH
+BH = terra::rast("D:/Stenka_UWI/Topic_3/04_PROCESSED_DATA/20211101_geodata_resamp/02_resample/BH_proj.tif")
+plot(BH)
+
+# ISF
+ISF = terra::rast("D:/Stenka_UWI/Topic_3/04_PROCESSED_DATA/20211101_geodata_resamp/02_resample/ISF_proj.tif")
+plot(ISF)
+
+```
+
+
+# Kriged ETo
+
+## Original ETo data
+
+This is the hourly ETo data before it was kriged. 
+
+```{r original ETo }
+
+load("D:/Stenka_UWI/Topic_3/04_PROCESSED_DATA/20211125_kriged_ETo_hourly/ETo_for_interpol_hourly.RData")
+
+glimpse(ETo_for_interpol_hourly) # 17,544 obs. 
+
+
+
+which(ETo_for_interpol_hourly$timestamp == as.POSIXct("2019-05-01 00:00:00", tz = "UTC"))
+
+which(ETo_for_interpol_hourly$timestamp == as.POSIXct("2019-05-06 23:00:00", tz = "UTC"))
+
+```
+## Kriged ETo 
+
+I am loading the **hourly** kriged ETo already as longlat. 
+
+```{r Kriged ETo }
+
+ETo = readRDS(file = "D:/Stenka_UWI/Topic_3/04_PROCESSED_DATA/20211125_kriged_ETo_hourly/ETo_l_longlat_hourly.rds")
+
+length(ETo) # 17544
+
+raster::plot(ETo[[1001]])
+
+ETo[[846]]
+
+```
+
+## Convert all ETo layers to terra format 
+
+```{r convert all ETo layers to terra format }
+
+# testETo = ETo[[1]]
+# ETo_terra = terra::rast(testETo)
+
+ETo_l_terra = pbapply::pblapply(
+  1:length(ETo), function(i)
+    terra::rast(ETo[[i]])
+)
+
+#|++++++++++++++++++++++++++++++++++++++++++++++++++| 100% elapsed=01m 17s
+
+```
+Saving the Spatraster list did not work! Just remake it every time. 
+
+# Import RF model 
+
+I am predicting in 2019. 
+Therefore, the model should be trained in **2020**. 
+
+```{r import RF model }
+
+mod = readRDS("D:/Stenka_UWI/Topic_3/05_RESULTS/20211101_RF_models/Train_2020/Mod_Train2020_RF.rds")
+
+plot(caret::varImp(mod))
+
+```
+# Function 
+
+This function will take as an argument a list of dates, e.g. all the dates in `ETo_for_interpol_hourly` (the original ETo dataframe before kriging). 
+From each date, the function will extract a DOY to subset the NDVI raster. 
+The row of the `date` selected will also be used to subset to kriged ETo. 
+
+Only one year can be run at a time.  
+
+## Function with date 
+
+```{r function with date }
+
+# assumption: all geodata is already in longlat
+# assumption: all geodata (except for ETo) is already coregistered 
+
+# This function returns a dataframe (xyz) which can easily be converted to a raster later 
+
+# NDVI_stack, VH, BH, VF, ISF: Should be coregistered SpatRasters (10-m resolution)
+
+# NDVI_stack should be a "rasterstack" for a single year (one NDVI layer/day)
+
+# ETo_stack: ETo SpatRaster at 1-km resolution; a stack of half-hourly ETo rasters 
+
+# mod: Trained model 
+
+# date: "2019-01-01 00:00:00 UTC" for example 
+
+# ETo_df: Dataframe with original ETo prepared for kriging but not yet kriged "ETo_for_interpol_hourly" 
+# ETo_df should have the same number of rows and same timestamp as the list of kriged ETo rasters. 
+# For example ETo_l_terra has 35,088 elements and ETo_for_interpol_hourly has 35088 obs. 
+# ETo_l_terra is kriged version of ETo_for_interpol_hourly
+
+mapET_date = function(date, ETo_df, NDVI_stack, VH, BH, VF, ISF, ETo_stack, mod) {
+  
+  # select ETo based on date 
+  row_ETo = which(ETo_df$timestamp == as.POSIXct(date, tz = "UTC")) # row of this date
+  ETo = ETo_stack[[row_ETo]] # select ETo raster 
+  
+  # extract DOY for NDVI 
+  NDVI_row = lubridate::yday(date) # DOY
+  NDVI = NDVI_stack[[NDVI_row]] # select NDVI based on DOY 
+  
+  ETo_10m = terra::resample(x = ETo ,y = NDVI, method = "bilinear") # resample ETo to NDVI (10m)
+  
+  pred_stack = c(BH, ISF, VH, VF, NDVI, ETo_10m) # create prediction raster stack
+  names(pred_stack) = c("BH", "ISF", "VH", "VF", "NDVI_FP", "ETo_krg") # rename stack
+  
+  pred_stack_mask = terra::mask(x = pred_stack, mask = NDVI ) # Mask out NAs (outside of Berlin)
+  
+  pred_stack_df = terra::as.data.frame(x = pred_stack_mask, xy = TRUE) # convert to dataframe 
+  
+  pred_df = pred_stack_df
+# remove columns that are not predictors 
+  pred_df$x = NULL
+  pred_df$y = NULL
+  
+  pred_ET = stats::predict(object = mod, pred_df)
+  
+  pred_stack_df$pred_ET = pred_ET # add predicted ET to df with coordinates
+  
+  pred_df_final = pred_stack_df %>% dplyr::select(x,y, pred_ET) # coords and predicted ET
+  
+  rast_ET = terra::rast(pred_df_final, type = "xyz")
+  
+  return(rast_ET)
+  
+}
+
+```
+
+
+# Run function with lapply 
+
+Now I will map a week.
+
+```{r min and max dates }
+
+start = which(ETo_for_interpol_hourly$timestamp == as.POSIXct("2019-05-01 00:00:00", tz = "UTC"))
+start
+
+end = which(ETo_for_interpol_hourly$timestamp == as.POSIXct("2019-05-06 23:00:00", tz = "UTC"))
+end 
+
+end - start
+
+ETo_for_interpol_hourly$timestamp[start]
+ETo_for_interpol_hourly$timestamp[end]
+
+```
+
+```{r Run lapply function }
+
+map_list = pbapply::pblapply(start : end, function(i)
+  mapET_date(
+    date = ETo_for_interpol_hourly$timestamp[i],
+    ETo_df = ETo_for_interpol_hourly,
+                       NDVI_stack = NDVI_2019,
+                       VH = VH, BH = BH, VF = VF, ISF = ISF,
+                       ETo_stack = ETo_l_terra,
+                       mod = mod
+  )
+  )
+
+#      |++++++++++++++++++++++++++++++++++++++++++++++++++| 100% elapsed=12h 27m 21s
+
+# map_list List of 144
+
+
+```
+
+
+# Sum ET daily
+
+This is a function that saves rasters of daily ET (mm/ day).
+
+```{r function save_dailyET }
+
+# Original list of predictions ("map_list") is hourly! 
+
+# date_started_mapping = "2019-05-01"
+# Date from which I ran mapping:
+# on what day did the original map list start (always at 0 UTC)
+
+# date_daily_ET = "2019-05-01"
+# Date for which I want to save a daily ET sum raster 
+
+# ETo_df = ETo_for_interpol_hourly
+# ETo_df: Dataframe with original ETo prepared for kriging but not yet kriged "ETo_for_interpol_hourly" 
+# ETo_df should have the same number of rows and same timestamp as the list of kriged ETo rasters. 
+# For example ETo_l_terra has 17,544 elements and ETo_for_interpol_hourly has 17,544 obs. 
+# ETo_l_terra is kriged version of ETo_for_interpol_hourly
+# I use this dataframe to identify where a specific date is within the list of hourly ET maps. 
+
+# map_list = map_list 
+# A list of hourly ET maps (SpatRasters)
+
+save_dailyET = function(date_started_mapping, date_daily_ET, ETo_df,
+                        map_list) {
+# Offset based on the date I started running mapping 
+  offset = which(ETo_df$timestamp == as.POSIXct(paste(date_started_mapping, " 00:00:00", sep = ""), tz = "UTC")) - 1
+  
+  # Calculate where to subset 
+  # First hour of the day at 0 UTC 
+  start = which(ETo_df$timestamp == as.POSIXct(paste(date_daily_ET, " 00:00:00", sep = ""), tz = "UTC")) - offset
+  
+  # Last hour of the day at 23 UTC
+  end = which(ETo_df$timestamp == as.POSIXct(paste(date_daily_ET, " 23:00:00", sep = ""), tz = "UTC")) - offset 
+  
+  # Subset the map list 
+  map_l_date = map_list[start: end]
+  
+  # Make a stack 
+  stack = terra::rast(map_l_date)
+  
+  # Sum to daily ET 
+  ETdaily = terra::app(stack, fun = sum)
+  
+  # convert to normal raster and add CRS 
+  ET_daily_r = raster::raster(ETdaily)
+  raster::crs(ET_daily_r) = "+proj=longlat +datum=WGS84 +no_defs"
+  
+  # write the raster 
+  raster::writeRaster(ET_daily_r, 
+                      paste("D:/Stenka_UWI/Topic_3/05_RESULTS/20211129_dailyET_2019/June/ET_", date_daily_ET, ".tif", sep = ""),
+                      options='COMPRESS=LZW' )
+}
+
+```
+
+
+# Run function with list of dates 
+
+`start = which(ETo_for_interpol_hourly$timestamp == as.POSIXct("2019-05-01 00:00:00", tz = "UTC"))`  
+
+`end = which(ETo_for_interpol_hourly$timestamp == as.POSIXct("2019-05-06 23:00:00", tz = "UTC")) `  
+
+```{r list of dates }
+
+list_dates = list("2019-05-01","2019-05-02","2019-05-03","2019-05-04", "2019-05-05","2019-05-06") 
+
+list_dates[[2]]
+
+length(list_dates)
+
+pbapply::pblapply(1: length(list_dates), function(i)
+  save_dailyET(date_started_mapping = "2019-05-01",
+             date_daily_ET = list_dates[[i]],
+             ETo_df = ETo_for_interpol_hourly,
+             map_list = map_list )
+  )
+
+# |++++++++++++++++++++++++++++++++++++++++++++++++++| 100% elapsed=07m 15s
+
+
+```
+
+
+

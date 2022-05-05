@@ -1,0 +1,813 @@
+---
+title: "Preprocessing before footprint analysis (TUCC)"
+author: "Stenka Vulova"
+date: "14 Oct. 2021"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+Credit is given to Justus Quanz for this code. 
+https://www.hcu-hamburg.de/master/reap-resource-efficiency/academic-staff/wolfgang-dickhaut/justus-quanz 
+
+# Libraries 
+
+```{r libraries }
+
+library(sp)
+library(raster)
+library(rgdal)
+library(lubridate)
+library(maptools)
+library(ggplot2)
+library(tidyr)
+library(plyr)
+library(dplyr)
+library(grid)
+library(spatstat)
+library(sf)
+library(readr)
+library(RColorBrewer)
+library(reshape2)
+library(scales)
+
+```
+
+The older package is no longer in the CRAN. 
+https://cran.r-project.org/src/contrib/Archive/FREddyPro/ 
+
+https://support.rstudio.com/hc/en-us/articles/219949047-Installing-older-versions-of-packages 
+
+```{r Freddypro library }
+
+# https://cran.r-project.org/src/contrib/Archive/FREddyPro/FREddyPro_1.0.tar.gz
+
+#packageurl <- "https://cran.r-project.org/src/contrib/Archive/FREddyPro/FREddyPro_1.0.tar.gz"
+#install.packages(packageurl, repos=NULL, type="source")
+
+library(FREddyPro)
+
+```
+
+# Correct for seasonality
+
+## Import UMEP data  
+
+I am importing the new UMEP point data that I created on 20 July (search distance was 1000-m).  
+
+**Step 1)** Calculate morphometric parameters around both eddy flux towers using the QGIS plug-in UMEP for one-degree segments within a 1000-m radius around the tower.  
+
+* Search distance (m): 1000
+* Wind direction search interval (degrees): 1 
+* Roughness calculation method: Kanda et al. (2013)
+
+```{r import UMEP data }
+
+Lambda_B_1deg <- read.csv("/Users/stenkavulova/Dropbox/Stenka_UWI/Topic_2/04_PROCESSED_DATA/20200720_UMEP_point/TUCC/TUCC_BH_1000m__IMPPoint_anisotropic.csv", header = TRUE, sep=",")
+
+Lambda_V_1deg <- read.csv("/Users/stenkavulova/Dropbox/Stenka_UWI/Topic_2/04_PROCESSED_DATA/20200720_UMEP_point/TUCC/TUCC_VH_1000m__IMPPoint_anisotropic.csv", header = TRUE, sep=",")
+
+Lambda_comb_1deg <- read.csv("/Users/stenkavulova/Dropbox/Stenka_UWI/Topic_2/04_PROCESSED_DATA/20200720_UMEP_point/TUCC/TUCC_comb_1000m__IMPPoint_anisotropic.csv", header = TRUE, sep=",")
+
+glimpse(Lambda_comb_1deg)
+
+```
+
+## Correct UMEP data for seasonality 
+
+Step 2) Correct zd for seasonality (Kent et al. 2017b).  
+
+This procedure is shown in Justus’s script `RUN_Kanda_calc.R`.  
+
+A few of Justus's functions need to be loaded beforehand. 
+
+### planar_area_index function 
+
+```{r planar_area_index function, include = FALSE }
+
+# make the Kent 2017b method including vegetaion to plane area index
+# @title Calculate the plane area index based on the method from Kent 2017b
+# @description The function calculate the plant area index based on the plan area index
+# for buildings and for vegetation (each evaluated spereatly by UMEP). The vegetation is then multipied by (1-P3D), where
+# P3D is the porosity (for leaf-on  P3D = 0.2, leaf-off P3D = 0.6 and intermediate P3D = 0.4)
+# @param lambda_building Give the plan area index for buildings
+# @param lambda_vegetaion Give the plan area index for vegetatino
+# @param P3D Give the porosity (for leaf-on  P3D = 0.2, leaf-off P3D = 0.6 and intermediate P3D = 0.4)
+# @return The function returns a new plan area index including vegetation and buildings.
+# @seealso Kent, C. W.; Grimmond, S.; Gatey, D. Aerodynamic roughness parameters in
+#  cities: Inclusion of vegetation. Journal of Wind Engineering and Industrial
+#  Aerodynamics 2017, 169, 168–176, /code{/link{doi:10.1016/j.jweia.2017.07.016.}}
+# @examples
+# /dontrun{
+# P3D <- (1-(0.2/1.08))^(1/1.8)
+# Lambda_V <- (1-P3D)*Lambda_V_1000m$pai
+# }
+# @rdname planar_area_index
+# @export
+planar_area_index <- function(lambda_building, lambda_vegetaion, P3D){
+  # calculate the plane area index for the vegetation
+  Lambda_V <- (1-P3D)*lambda_vegetaion
+  # combine Lambda_building and lambda vegetation
+  Lambda_p <- (Lambda_V+lambda_building)
+  return(Lambda_p)
+}
+
+
+```
+
+### frontal_area_index function 
+
+```{r frontal_area_index function, include = FALSE }
+
+# @title Calculate the frontal area index including buildings but also vegetaion
+# as described by Kent et al. 2017
+# @description The function used the frontal area index for vegetation and buildings
+# (each evaluated spereatly by UMEP). The frontal area index for vegetation is
+# further modified by the porosity.
+# @param fai_v The frontal area index for vegetation.
+# @param fai_b The fontral area index for buíldings.
+# @param P3D The porosity (for leaf-on  P3D = 0.2, leaf-off P3D = 0.6 and intermediate P3D = 0.4)
+# @param Cdb The drag coefficient  (Cdv) from Hagen and skidmore 1971
+# single tree and one row deciduous windbreaks 0.5, vs. coniferous windbreaks 0.6-1.2)
+# @return The function returns a new created frontal area index including buildings and
+# vegetation.
+# @examples
+# /dontrun{
+# frontal_area_index(fai_v = Lambda_V_1000m$fai, fai_b = Lambda_B_1000m$fai,
+#                   Cdb = 1.2)
+#                   }
+# @seealso Kent, C. W.; Grimmond, S.; Gatey, D. Aerodynamic roughness parameters in
+#  cities: Inclusion of vegetation. Journal of Wind Engineering and Industrial
+#  Aerodynamics 2017, 169, 168–176, /code{/link{doi:10.1016/j.jweia.2017.07.016.}}
+# @rdname frontal_area_index
+# @export
+
+frontal_area_index <- function(fai_v, fai_b, P3D,Cdb){
+  Pv <- ((-1.251*(P3D^2)+0.489*(P3D)+0.803)/1*Cdb)
+  lambda_output <- fai_b + (Pv*fai_v)
+  return(lambda_output)
+}
+
+
+```
+
+### Kanda_zd function 
+
+```{r Kanda_zd function, include = FALSE }
+
+# @title Calculates the z0 according to Kanda 2013 and Kent 2017
+# @description The function estimates the zd (zero plane displacement) based on the approach
+# described by Kanda 2013. Which is based on the method from MacDonald.
+# @param pai The plane area index
+# @param fai The frontal area index
+# @param zH The average roughness elements height
+# @param zstd The standard devitaion of the roughness elements height
+# @param zHmax The maximum roughness element height
+# @param Cd The drag coefficient  (Cdv) from Hagen and skidmore 1971
+# single tree and one row deciduous windbreaks 0.5, vs. coniferous windbreaks 0.6-1.2), Default: 1.2
+# @return The function returns the zero plane displacement zd as described in Kanda 2013,
+# Kent 2017 and MacDonald 1998.
+# @seealso Kanda, M.; Inagaki, A.; Miyamoto, T.; Gryschka, M.; Raasch, S.
+# A New Aerodynamic Parametrization for Real Urban Surfaces. Boundary-Layer
+# Meteorology 2013, 148, 357–377, /code{/link{doi:10.1007/s10546-013-9818-x.}}
+# Kent, C. W.; Grimmond, S.; Gatey, D. Aerodynamic roughness parameters in
+# cities: Inclusion of vegetation. Journal of Wind Engineering and Industrial
+# Aerodynamics 2017, 169, 168–176, /code{/link{doi:10.1016/j.jweia.2017.07.016.}}
+# Macdonald, R. W.; Griffiths, R. F.; Hall, D. J. An improved method for the
+# estimation of surface roughness of obstacle arrays. Atmospheric Environment
+# 1998, 32, 1857–1864, /code{/link{doi:10.1016/S1352-2310(97)00403-2.}}
+# @examples
+# /dontrun{
+# # function to calculate the zd according to Kanda
+# # Zd = (c0 * X^2 + ( (a0 * (Lp^b0) - c0) * X ) ) * Hmax
+# # with a0 = 1.29, b0 = 0.36, c0 = -0.17 and X = ((omegaH + Haverage)/Hmax)
+# Kanda_zd(pai = Lambda_B_1000m$pai,fai = Lambda_B_1000m$fai,
+# zH = Lambda_B_1000m$zH, zstd = Lambda_B_1000m$zHstd,
+# zHmax = Lambda_B_1000m$zHmax,Cd = 1.2)
+# }
+# @rdname Kanda_zd
+# @export
+
+Kanda_zd <- function(pai, fai, zH, zstd, zHmax, Cd = 1.2){
+  # Basic params needed:
+  Alph <- 4.43
+  Beet <- 1.0
+  k <- 0.4 # Karman Konstante
+  # From Kanda
+  Ao <- 1.29
+  Bo <- 0.36
+  Co <- -0.17
+
+  # Run the Mcdonald method which is the basis for the Kanda method
+  z_d_output <- (1+ (Alph^(-pai)) * (pai-1))*zH
+  # Macexp <- 0.5*Beet*(Cd/k^2)*(1-z_d_output/zH)*fai
+  # Calc the X
+  X <- (zstd+zH)/zHmax
+  # The fundamental MacDonald zd has to be adjusted by the Kanda method
+  if(!is.na(X)){
+    if(X >0 & X <= 1){
+      z_d_output <- ((Co*(X^2))+((Ao*(pai^Bo)) -Co)*X)*zHmax
+    }else{
+      z_d_output <- (Ao*(pai^Bo))*zH
+    }
+  }else{
+    z_d_output <- (Ao*(pai^Bo))*zH
+  }
+
+  return(z_d_output)
+}
+
+
+```
+
+### Kanda_z0 function 
+
+```{r Kanda_z0 function, include = FALSE }
+
+# @title Calculates the z0 according to Kanda 2013 and Kent 2017
+# @description The function estimates the z0 (roughness length) based on the approach
+# described by Kanda 2013. Which is based on the method from MacDonald.
+# @param fai The frontal area index.
+# @param pai The plane area index
+# @param zstd The standard deviation of the roughness elements height
+# @param zH The average roughness elements height
+# @param zHmax The maximum roughness elements height
+# @param Cd The drag coefficient  (Cdv) from Hagen and skidmore 1971
+# single tree and one row deciduous windbreaks 0.5, vs. coniferous windbreaks 0.6-1.2), Default: 1.2
+# @return The function returns a z0 including vegetation and buildings described in the
+# method from Kanda 2013, Kent 2017 and MacDonald 1998
+# @seealso Kanda, M.; Inagaki, A.; Miyamoto, T.; Gryschka, M.; Raasch, S.
+# A New Aerodynamic Parametrization for Real Urban Surfaces. Boundary-Layer
+# Meteorology 2013, 148, 357–377, /code{/link{doi:10.1007/s10546-013-9818-x.}}
+# Kent, C. W.; Grimmond, S.; Gatey, D. Aerodynamic roughness parameters in
+# cities: Inclusion of vegetation. Journal of Wind Engineering and Industrial
+# Aerodynamics 2017, 169, 168–176, /code{/link{doi:10.1016/j.jweia.2017.07.016.}}
+# Macdonald, R. W.; Griffiths, R. F.; Hall, D. J. An improved method for the
+# estimation of surface roughness of obstacle arrays. Atmospheric Environment
+# 1998, 32, 1857–1864, /code{/link{doi:10.1016/S1352-2310(97)00403-2.}}
+# @examples
+# /dontrun{
+# # Zd = (c0 * X^2 + ( (a0 * (Lp^b0) - c0) * X ) ) * Hmax
+# # with a0 = 1.29, b0 = 0.36, c0 = -0.17 and X = ((omegaH + Haverage)/Hmax)
+# # Z0 = ((b1*Y^2) + (c1*Y) + a1)MacZ0
+# # Y <- ((Lambda_summer*zH_std)/zH)
+# # Cdb <- 1.2 # Hall et al 1996 (from Kent et al 2017a)
+# Kanda_z0(fai = Lambda_B_1000m$fai,pai = Lambda_B_1000m$pai,
+#          zstd = Lambda_B_1000m$zHstd, zH = Lambda_B_1000m$zH,
+#          zHmax = Lambda_B_1000m$zHmax,Cd = 1.2)
+#          }
+# @rdname Kanda_z0
+# @export
+
+Kanda_z0 <- function(fai, pai, zstd, zH, zHmax, Cd = 1.2){
+  # Basic params needed:
+  Alph <- 4.43
+  Beet <- 1.0
+  k <- 0.4 # Karman Konstante
+
+  A1 <- 0.71
+  B1 <- 20.21
+  C1 <- -0.77
+  # THe basic zd from McDonald is needed for the calculation of the z0Mac
+  z_d_output <- (1+ (Alph^(-pai)) * (pai-1))*zH
+  z0Mac <- (zH*(1-z_d_output/zH)*exp(-(0.5*(Cd/k^2)*(1-(z_d_output/zH))*fai)^-0.5))
+  # This z0Mac is than adjusted by the Kanda method
+  Y <- (pai*zstd/zH)
+  if(!is.na(Y)){
+    if(Y >= 0){
+      z_0_output <- ((B1*(Y^2))+(C1*Y)+A1)*z0Mac
+    }else{
+      z_0_output <- A1*z0Mac
+    }
+  }else{
+    z_0_output <- A1*z0Mac
+  }
+
+
+  return(z_0_output)
+}
+
+
+```
+
+### RUN_Kanda_calc
+
+```{r Correct UMEP data for seasonality }
+
+# from the UMEP I will get one zd and z0 determined for the buildings as obstrucles
+# and anotherone for the vegetation. The combination of both will than be used for 
+# the determination of the "REAL" zd and z0 sperearted into a leaf-off and -on seasons.
+
+# (Cdv = drag coefficient for vegetation: from Hagen and skidmore 1971
+  # single tree and one row deciduous windbreaks 0.5, vs. coniferous windbreaks 
+  # 0.6-1.2)
+# Kent 2017b: uses for leaf-on  P3D = 0.2 and leaf-off P3D = 0.6 (and 0.4 for intermediate)
+    # do the Lp_summer and winter also for each degree 
+# summer
+    pai_deg_summer <- planar_area_index(lambda_building = Lambda_B_1deg$pai, 
+                             lambda_vegetaion = Lambda_V_1deg$pai,P3D = 0.2)
+# winter
+    pai_deg_winter <- planar_area_index(lambda_building = Lambda_B_1deg$pai, 
+                                 lambda_vegetaion = Lambda_V_1deg$pai,P3D = 0.6)
+# intermediate
+    pai_deg_intermediate <- planar_area_index(lambda_building = Lambda_B_1deg$pai, 
+                                        lambda_vegetaion = Lambda_V_1deg$pai,P3D = 0.4)
+    
+# and easy calculation of the frontal area fraiton
+
+# and for each degree
+fai_deg_summer <- frontal_area_index(fai_v = Lambda_V_1deg$fai,
+                                     fai_b = Lambda_B_1deg$fai, 
+                                     P3D = 0.2, Cdb = 1.2)
+
+fai_deg_winter <- frontal_area_index(fai_v = Lambda_V_1deg$fai,
+                                 fai_b = Lambda_B_1deg$fai, 
+                                 P3D = 0.6, Cdb = 1.2)
+
+fai_deg_intermediate <- frontal_area_index(fai_v = Lambda_V_1deg$fai,
+                                     fai_b = Lambda_B_1deg$fai, 
+                                     P3D = 0.4, Cdb = 1.2)
+
+# Calcualte the zd and z0 from Lp_summer, and winter from Kanda:
+  # This should be the same as in Lambda_B_1000m$zd
+    # Zd_compare = Kanda_zd(pai = Lambda_B_1000m$pai,fai = Lambda_B_1000m$fai,
+    #                       zstd = Lambda_B_1000m$zHstd,zH = Lambda_B_1000m$zH,
+    #                       zHmax = Lambda_B_1000m$zHmax,Cd = 1.2)
+
+# Zd summer lies inbetween zd_building and zd_vegetation (as it should be!)
+
+# and now for each degree
+Zd_deg_summer <- c()
+Zd_deg_winter <- c()
+Zd_deg_intermediate <- c()
+for(i in 1:360){
+  Zd_deg_summer[i] <- Kanda_zd(pai = pai_deg_summer[i], fai = fai_deg_summer[i],
+                            zH = Lambda_comb_1deg$zH[i], zstd = Lambda_comb_1deg$zHstd[i],
+                            zHmax = Lambda_comb_1deg$zHmax[i])
+    Zd_deg_winter[i] <- Kanda_zd(pai = pai_deg_winter[i], fai = fai_deg_winter[i],
+                            zH = Lambda_comb_1deg$zH[i], zstd = Lambda_comb_1deg$zHstd[i],
+                            zHmax = Lambda_comb_1deg$zHmax[i])
+    Zd_deg_intermediate[i] <- Kanda_zd(pai = pai_deg_intermediate[i], 
+                                       fai = fai_deg_intermediate[i],
+                                 zH = Lambda_comb_1deg$zH[i], 
+                                 zstd = Lambda_comb_1deg$zHstd[i],
+                                 zHmax = Lambda_comb_1deg$zHmax[i])
+}
+# difference plot (influence of season on roughness)
+# plot(Zd_deg_summer-Zd_deg_winter)
+
+# And the same for the z0
+# and now for each degree
+Z0_deg_summer <- c()
+Z0_deg_winter <- c()
+Z0_deg_intermediate <- c()
+for(i in 1:360){
+  Z0_deg_summer[i] <- Kanda_z0(fai = fai_deg_summer[i], pai = pai_deg_summer[i], 
+                               zstd = Lambda_comb_1deg$zHstd[i], zH = Lambda_comb_1deg$zH[i],
+                               zHmax = Lambda_comb_1deg$zHmax[i])
+  Z0_deg_winter[i] <- Kanda_z0(fai = fai_deg_winter[i], pai = pai_deg_winter[i], 
+                               zstd = Lambda_comb_1deg$zHstd[i], zH = Lambda_comb_1deg$zH[i],
+                               zHmax = Lambda_comb_1deg$zHmax[i])
+  Z0_deg_intermediate[i] <- Kanda_z0(fai = fai_deg_intermediate[i], pai = pai_deg_intermediate[i], 
+                                     zstd = Lambda_comb_1deg$zHstd[i], zH = Lambda_comb_1deg$zH[i],
+                                     zHmax = Lambda_comb_1deg$zHmax[i])
+}
+# plot(Z0_deg_summer-Z0_deg_winter)
+
+# make data table to export
+# for summer
+  summer_1deg <- data.table::data.table(cbind(c(0:359),pai_deg_summer, fai_deg_summer, 
+                                  Zd_deg_summer, Z0_deg_summer))
+  names(summer_1deg)[1] <- "Wd"
+# and for winter
+  winter_1deg <- data.table::data.table(cbind(c(0:359),pai_deg_winter, fai_deg_winter, 
+                                  Zd_deg_winter, Z0_deg_winter))
+  names(winter_1deg)[1] <- "Wd"
+# and for intermediate
+  intermediate_1deg <- data.table::data.table(cbind(c(0:359),pai_deg_intermediate, fai_deg_intermediate, 
+                                  Zd_deg_intermediate, Z0_deg_intermediate))
+  names(intermediate_1deg)[1] <- "Wd"
+
+
+```
+
+# Running mean calculation 
+
+**Step 3)** Average the one-degree zd values over a running mean including the zd values from wind direction i±5 degree moving forward by one degree.
+
+Justus: "I created a lookup table for mean values for each possible wind directions (1-360). The needed `running_mean` function was until now not included in the UCON Package but i just uploaded it. The other functions `order_zd_z0` and `average_z_by_wd` are used afterwards to arrange the numbers from the lookup table to the according wd.. Depending on the Method (Kotthaus wd+v_sd or wd+-5°) different lookup tables should be used!"  
+
+Why use a running mean? It smooths in a 10-degree slice: 1-degree is too narrow to be representative. Source? Kotthaus and Grimmond 2014 used a similar (though not the same) ‘running mean’ method. The 10-degree slice was an idea from Fred. 
+
+## Running mean function 
+
+```{r running_mean function, include = FALSE }
+
+# @title Creates a running mean for data e.g. roughness parameter
+# @description The function takes data that should be in a radial degree order
+# and averages the data for each degree ± 5 degree.
+# @param data This should be a data.table with 360 rows each including the information
+# for the 1 degree.
+# @return The function returns a data.table with again 360 rows but each including now
+# the average at point i±5.
+# @examples
+# mean(unlist(summer_1deg[c((355:360),(1:5)),..a]))
+# summer_1deg_running <- running_mean(data = summer_1deg)
+# summer_1deg_running$Z0_deg_summer[360]
+# @rdname running_mean
+# @export
+
+running_mean <- function(data){
+  if(nrow(data) != 360){
+    stop("The data should have 360 rows, one for each degree!")
+  }
+  output_mean <- data.table::data.table(matrix(as.numeric(), ncol = ncol(data), nrow = 360))
+  names(output_mean) <- names(data)
+  for(i in 1:360){
+    for(a in 2:ncol(data)){
+      if(i <5){
+        output_mean[i,a] <- mean(unlist(data[c(((360+i-5):360),(0:(i+5))),..a]))
+      }else if(i > 355 & i < 360){
+        output_mean[i,a] <- mean(unlist(data[c(((i-5):i),(i+1):360,(1:(5+i-360))),..a]))
+      }else if(i == 360){
+        output_mean[i,a] <- mean(unlist(data[c((355:360),(1:5)),..a]))
+      }else{
+        output_mean[i,a] <- mean(unlist(data[c((i-5):(i+5)),..a]))
+      }
+    }
+  }
+  output_mean[,1] <- c(1:360)
+  return(output_mean)
+}
+
+
+
+```
+
+## Apply running_mean 
+
+```{r Apply running_mean }
+
+summer_1deg_running = running_mean(data = summer_1deg)
+head(summer_1deg_running)
+
+# plot original data and running_mean (summer zd)
+ggplot()+
+  geom_line(data = summer_1deg, aes(x = Wd, y = Zd_deg_summer), color = "blue")+
+  geom_line(data = summer_1deg_running, aes(x = Wd, y = Zd_deg_summer), color = "red")
+
+winter_1_deg_running = running_mean(data = winter_1deg)
+
+intermediate_1_deg_running = running_mean(data = intermediate_1deg)
+
+```
+
+# Eddy flux data 
+
+Load the eddy flux data. 
+
+```{r Load eddy flux data }
+
+TUCC_raw <- read.delim("/Users/stenkavulova/Dropbox/Stenka_UWI/Topic_3/03_RAW_DATA/reeddyfluxdata2020/UCO_TUCC_for_UWI_2014-07-03_2021-05-31.txt", header = TRUE, sep=",")
+
+glimpse(TUCC_raw)
+
+```
+
+## Simplify column names 
+
+The column names are changed (shorter).
+
+```{r Change column names }
+
+colnames(TUCC_raw)
+
+names(TUCC_raw)[names(TUCC_raw) == "timestamp..UTC."] <- "timestamp"
+
+names(TUCC_raw)[names(TUCC_raw) == "upward.sensible.heat.flux.in.air..W.m.2...H...56.17m."] <- "H"
+
+names(TUCC_raw)[names(TUCC_raw) == "quality.flag.upward.sensible.heat.flux.in.air..cat...qc_H...56.17m."] <- "qc_H"
+
+names(TUCC_raw)[names(TUCC_raw) == "upward.latent.heat.flux.in.air..W.m.2...LE...56.17m."] <- "LE"
+
+names(TUCC_raw)[names(TUCC_raw) == "quality.flag.upward.latent.heat.flux.in.air..cat...qc_LE...56.17m."] <- "qc_LE"
+
+names(TUCC_raw)[names(TUCC_raw) == "H2O.signal.strength.infrared.gasanalyser...1...H2O_sig_strgth_mean...56.17m."] <- "H2O_sig_strgth_mean"
+
+names(TUCC_raw)[names(TUCC_raw) == "evapotranspiration.rate..mm.h.1...ET...56.17m."] <- "ET"
+
+names(TUCC_raw)[names(TUCC_raw) == "upward.mole.flux.of.carbon.dioxide.in.air..1e.6.mol.s.1.m.2...co2_flux...56.17m."] <- "co2_flux"
+
+names(TUCC_raw)[names(TUCC_raw) == "CO2.signal.strength.infrared.gasanalyser..1...CO2_sig_strgth_mean...56.17m."] <- "CO2_sig_strgth_mean"
+
+names(TUCC_raw)[names(TUCC_raw) == "wind.speed..m.s.1...wind_speed...56.17m."] <- "wind_speed"
+
+names(TUCC_raw)[names(TUCC_raw) == "wind.from.direction..degree...wind_dir...56.17m."] <- "wind_dir"
+
+names(TUCC_raw)[names(TUCC_raw) == "friction.velocity..m.s.1...u....56.17m."] <- "friction_velocity"
+
+names(TUCC_raw)[names(TUCC_raw) == "obukhov.length..m...L...56.17m."] <- "obukhov_length"
+
+names(TUCC_raw)[names(TUCC_raw) == "monin.obukhov.stability.parameter..1....z.d..L...56.17m."] <- "monin_obukhov_stability_parameter"
+
+names(TUCC_raw)[names(TUCC_raw) == "bowen.ratio..1...bowen_ratio...56.17m."] <- "bowen_ratio"
+
+names(TUCC_raw)[names(TUCC_raw) == "northward.wind..m2.s.2...v_var...56.17m."] <- "northward_wind"
+
+names(TUCC_raw)[names(TUCC_raw) == "w.wind.component..m.s.1...w_unrot...56.17m."] <- "wind_unrot"
+
+names(TUCC_raw)[names(TUCC_raw) == "air.temperature..degree_C...T_40m_Avg...56.17m."] <- "air_temperature"
+
+names(TUCC_raw)[names(TUCC_raw) == "relative.humidity......RH_40m_Avg...56.17m."] <- "RH"
+
+names(TUCC_raw)[names(TUCC_raw) == "air.pressure..hPa...air_pressure...56.17m."] <- "air_pressure"
+
+names(TUCC_raw)[names(TUCC_raw) == "liquid.precipitation.rate..mm.h.1...NS_Int_fluid...1.00m."] <- "precipitation"
+
+names(TUCC_raw)[names(TUCC_raw) == "downwelling.shortwave.flux.in.air..W.m.2...SPN_TOTAL_Avg...56.17m."] <- "SPN_TOTAL_Avg"
+
+names(TUCC_raw)[names(TUCC_raw) == "diffuse.downwelling.shortwave.flux.in.air..W.m.2...SPN_DIFFUSE_Avg...56.17m."] <- "diffuse_radiation"
+
+names(TUCC_raw)[names(TUCC_raw) == "downwelling.shortwave.flux.in.air..W.m.2...Rs_downwell_Avg...56.17m."] <- "radiation.shortwave.in"
+
+names(TUCC_raw)[names(TUCC_raw) == "downwelling.longwave.flux.in.air..W.m.2...Rl_downwell_Avg...56.17m."] <- "radiation.longwave.in"
+
+names(TUCC_raw)[names(TUCC_raw) == "upwelling.shortwave.flux.in.air..W.m.2...Rs_upwell_Avg...56.17m."] <- "radiation.shortwave.out"
+
+names(TUCC_raw)[names(TUCC_raw) == "upwelling.longwave.flux.in.air..W.m.2...Rl_upwell_Avg...56.17m."] <- "radiation.longwave.out"
+
+names(TUCC_raw)[names(TUCC_raw) == "surface.net.downward.radiative.flux..W.m.2."] <- "net.downward.radiative"
+
+```
+
+## Filter eddy flux data for quality 
+
+I am leaving the whole dataset now to run the entire footprint analyses on it! 
+
+```{r Filter for quality }
+
+# Convert NaN to NA 
+TUCC_raw[ TUCC_raw == "NaN"] = NA # Watch out - the new EC data uses both NaN and NAN
+TUCC_raw[ TUCC_raw == "NAN"] = NA
+
+# COnvert non-date columns to numeric 
+# https://stackoverflow.com/questions/3796266/change-the-class-from-factor-to-numeric-of-many-columns-in-a-data-frame
+TUCC_raw[,2:30] = apply(TUCC_raw[,2:30], 2, function(x) as.numeric(as.character(x)))
+
+#TUCC_raw = TUCC_raw[!(TUCC_raw$qc_LE == 2), ]
+# I will do data filtering later. 
+
+```
+
+## Reduce to 2018-2021
+
+Years 2018-2021 for my 3rd paper 
+
+```{r reduce years}
+
+TUCC_raw$timestamp = as.POSIXct(TUCC_raw$timestamp, tz = "GMT")
+
+TUCC_raw$Year = lubridate::year(TUCC_raw$timestamp)
+
+TUCC_18_21 = subset(TUCC_raw, Year == 2018 | Year == 2019 |
+                      Year == 2020 | Year == 2021 )
+
+```
+
+
+## Arrange zd from lookup table according to wd 
+
+"I created a lookup table for mean values for each possible wind directions (1-360). The needed running_mean function was until now not included in the UCON Package but i just uploaded it. The other functions order_zd_z0 and average_z_by_wd are used afterwards to arrange the numbers from the lookup table to the according wd.. Depending on the Method (Kotthaus wd+v_sd or wd+-5°) different lookup tables should be used!"
+
+### average_z_by_wd function 
+
+```{r average_z_by_wd function, include = FALSE }
+
+# @title Selects zd and z0 accoring to the prevailing wind direction and uses as zd and z0
+# @description The basis is a running mean lookup-table or as described in the method
+# by Kothaus and Grimmond 2014 where they average zd and z0 for the WD degree ± sd_v.
+# @param wd Wind direction
+# @param v_sd If the Kotthaus Method is used sd_v is needed otherwise not,thus Default: NULL
+# @param z_data The z_data should be a data.table with the zd and z0 values
+# (as data.table("deg"= c(1:360), "zd"= Zd_winter, "z0" = Z0_winter)).
+# @param deg_column The name of the columne in z_data where the degree is.
+# @param Kotthaus Logical if the Kotthaus mehtod is used the default is FALSE!
+# @return The function returns a vector with two numbers. The first one ist the
+# averaged zd and the second one the z0 value.
+# @seealso Kotthaus, S.; Grimmond, C. S. B. Energy exchange in a dense urban
+# environment – Part II: Impact of spatial heterogeneity of the surface. Urban
+# Climate 2014, 10, Part 2, 281–307, /code{/link{doi:10.1016/j.uclim.2013.10.001.}}
+# /code{/link{oder_zd_z0}}
+# @examples
+# # explain the function
+# /dontrun{
+# min <- round(all_day_footprint$wind_dir[120], 0)
+# max <- round(all_day_footprint$wind_dir[120],0)
+# mean(z_summer$`zm-zd`[which(z_summer$deg <= max &
+#                            z_summer$deg >= min)])
+# # test the function
+# average_z_by_wd(wd = all_day_footprint$wind_dir[120],
+#                 z_data = z_summer,deg_column = "deg", z_column= "`zm-zd`")
+#                 }
+# @rdname average_z_by_wd
+# @export
+#
+average_z_by_wd <- function(wd, v_sd= NULL, z_data, deg_column, Kotthaus = F){
+  # create the winddirection range where to average over
+  if(Kotthaus == F){
+    # in case that the wd+v_sd is above 360 degree
+    if(round(wd,0) >360){
+      max_wd <- round(round((wd)-360,0),0)
+      min_wd <- round(wd,0)
+    }else if(round(wd,0) < 1){ # and in case that the wd+v_sd is below 1 deg
+      min_wd <- round(round((wd)+360,0))
+      max_wd <- round(wd,0)
+    }else{
+      min_wd <- round(wd,0)
+      max_wd <- round(wd,0)
+    }
+  }else{
+    # in case that the wd+v_sd is above 360 degree
+    if(round(wd+v_sd,0) >360){
+      max_wd <- round(round((wd+v_sd)-360,0),0)
+      min_wd <- round(wd-v_sd,0)
+    }else if(round(wd-v_sd,0) < 1){ # and in case that the wd+v_sd is below 1 deg
+      min_wd <- round(round((wd-v_sd)+360,0))
+      max_wd <- round(wd+v_sd,0)
+    }else{
+      min_wd <- round(wd-v_sd,0)
+      max_wd <- round(wd+v_sd,0)
+    }
+  }
+
+  # select the z_data according to max_wd and min_wd
+  output_1 <- mean(z_data$zd[which(z_data$deg <= max_wd &
+                              z_data$deg >= min_wd)])
+  output_2 <- mean(z_data$z0[which(z_data$deg <= max_wd &
+                                          z_data$deg >= min_wd)])
+  return(c(output_1,output_2))
+}
+
+
+```
+
+### order_zd_z0 function
+
+```{r order_zd_z0 function, include = FALSE }
+
+# @title Orders the zd and z0 data by the wd for a given dataset
+# @description Two options are possible how to average zd and z0. First and default
+# is to take zd and z0 from a lookup-table including the running mean for each degree
+# that is a mean for the degree ±5°. The other option is the method described
+# by Kothaus and Grimmond 2014 where they average zd and z0 for the WD degree ± sd_v.
+# @param Zd_winter Zero plane displacement (zd) data for winter
+# @param Z0_winter Roughness length (z0) data for winter
+# @param Zd_intermediate Zero plane displacement (zd) data for intermediat
+# @param Z0_intermediate Roughness length (z0) data for intermediate
+# @param Zd_summer Zero plane displacement (zd) data for summer
+# @param Z0_summer Roughness length (z0) data for summer
+# @param Timestamp A simple Timestamp to indentify the seson.
+# @param Kotthaus Decide which method should be used. The default is the running mean, Default: F
+# @param wind_direction The wind direction data.
+# @param wind_v In case the Kotthaus method is applied, sd_v is needed and should be applied
+# here. Otherwise just, Default: NULL
+# @return The functoin returns a vector of same length as all input data including the
+# zd and z0 depending on the selected method.
+# @seealso Kotthaus, S.; Grimmond, C. S. B. Energy exchange in a dense urban
+# environment – Part II: Impact of spatial heterogeneity of the surface. Urban
+# Climate 2014, 10, Part 2, 281–307, /code{/link{doi:10.1016/j.uclim.2013.10.001.}}
+# /code{/link{average_z_by_wd}}
+# @examples
+# /dontrun{
+# rralle <- order_zd_z0(Zd_winter = winter_1deg_500$Zd_deg_winter_500,
+#              Z0_winter = winter_1deg_500$Z0_deg_winter_500,
+#              Zd_intermediate = intermediate_1deg_500$Zd_deg_intermediate_500,
+#              Z0_intermediate = intermediate_1deg_500$Z0_deg_intermediate_500,
+#              Zd_summer = summer_1deg_500$Zd_deg_summer_500,
+#              Z0_summer = summer_1deg_500$Z0_deg_summer_500,
+#              Timestamp = all_day_footprint$TIMESTAMP,
+#              wind_direction = all_day_footprint$wind_dir)
+#              }
+# @rdname order_zd_z0
+# @export
+order_zd_z0 <- function(Zd_winter, Z0_winter, Zd_intermediate, Z0_intermediate,
+         Zd_summer, Z0_summer, Timestamp, Kotthaus = F,
+         wind_direction, wind_v = NULL){
+  # check if the length of wind_direction and Timestamp are equal
+  if(length(Timestamp) != length(wind_direction) ){
+    stop("The length of Timestamp and wind_direction differ!")
+  }
+  # generate look-up data.table
+  z_winter <- data.table::data.table("deg"= c(1:360),"zd"= Zd_winter,
+                         "z0" = Z0_winter)
+  z_intermediate <- data.table::data.table("deg"= c(1:360),"zd"= Zd_intermediate,
+                               "z0" = Z0_intermediate)
+  z_summer <- data.table::data.table("deg"= c(1:360),"zd"= Zd_summer,
+                         "z0" = Z0_summer)
+  # create an empty output data.table
+  z_result <- data.table::data.table(TIMESTAMPE = Timestamp, zd= rep(as.numeric(NA),length(wind_direction)),
+                         z0= rep(as.numeric(NA),length(wind_direction)))
+
+  # in case that the average is made with the running mean
+  if(Kotthaus == F){
+    for(i in 1:nrow(z_result)){
+      if(is.na(wind_direction[i])){
+        z_result$zd[i] <- NA
+        z_result$z0[i] <- NA
+      }else{
+        if(substr(Timestamp[i],6,7) %in% c("12","01","02")){  # THIS IS WINTER
+            res <- average_z_by_wd(wd = wind_direction[i],
+                                   z_data = z_winter, deg_column = "deg")
+          # res includes two different data 1 = zd and 2 = z0
+          z_result$zd[i] <- res[1]
+          z_result$z0[i] <- res[2]
+        }else if(substr(Timestamp[i],6,7) %in% c("06","07","08")){ # THIS IS SUMMER
+            res <- average_z_by_wd(wd = wind_direction[i],
+                                   z_data = z_summer, deg_column = "deg")
+          z_result$zd[i] <- res[1]
+          z_result$z0[i] <- res[2]
+        }else{
+            res <- average_z_by_wd(wd = wind_direction[i],
+                                   z_data = z_intermediate, deg_column = "deg")
+          z_result$zd[i] <- res[1]
+          z_result$z0[i] <- res[2]
+        }
+      }
+    }
+  }else{
+    for(i in 1:nrow(z_result)){
+      if(is.na(wind_direction[i])){
+        z_result$zd[i] <- NA
+        z_result$z0[i] <- NA
+      }else{
+      if(substr(Timestamp[i],6,7) %in% c("12","01","02")){  # THIS IS WINTER
+          res <- average_z_by_wd(wd = wind_direction[i],v_sd = wind_v[i],
+                                 z_data = z_winter, deg_column = "deg", Kotthaus = T)
+        # res includes two different data 1 = zd and 2 = z0
+        z_result$zd[i] <- res[1]
+        z_result$z0[i] <- res[2]
+      }else if(substr(Timestamp[i],6,7) %in% c("06","07","08")){ # THIS IS SUMMER
+          res <- average_z_by_wd(wd = wind_direction[i],v_sd = wind_v[i],
+                                 z_data = z_summer, deg_column = "deg", Kotthaus = T)
+        z_result$zd[i] <- res[1]
+        z_result$z0[i] <- res[2]
+      }else{
+          res <- average_z_by_wd(wd = wind_direction[i],v_sd = wind_v[i],
+                                 z_data = z_intermediate, deg_column = "deg", Kotthaus = T)
+        z_result$zd[i] <- res[1]
+        z_result$z0[i] <- res[2]
+      }
+    }
+    }
+  }
+  return(z_result)
+}
+
+
+```
+
+### Apply order_zd_z0 
+
+```{r apply order_zd_z0 }
+
+# Use the running means generated earlier 
+zd_z0_TUCC = order_zd_z0(Zd_winter = winter_1_deg_running$Zd_deg_winter,
+                         Z0_winter = winter_1_deg_running$Z0_deg_winter,
+                         Zd_intermediate = intermediate_1_deg_running$Zd_deg_intermediate,
+                         Z0_intermediate = intermediate_1_deg_running$Z0_deg_intermediate,
+                         Zd_summer = summer_1deg_running$Zd_deg_summer,
+                         Z0_summer = summer_1deg_running$Z0_deg_summer,
+                         Timestamp = TUCC_18_21$timestamp,
+                         wind_direction = TUCC_18_21$wind_dir
+)
+
+glimpse(zd_z0_TUCC)
+# You get a dataframe with 3 columns: TIMESTAMP, zd, and z0, which corresponds to the eddy flux dataframe. 
+# You can easily merge this result to the original eddy flux dataframe. 
+
+```
+
+### Combining data 
+
+Now, we merge the zd/z0 with the original eddy flux dataset. 
+
+```{r combining data }
+
+names(zd_z0_TUCC)[names(zd_z0_TUCC) == "TIMESTAMPE"] <- "timestamp"
+
+TUCC_final = dplyr::full_join(TUCC_18_21, zd_z0_TUCC)
+
+glimpse(TUCC_final)
+
+```
+
+Let's save the data. 
+
+```{r save data }
+
+#save(TUCC_final, file = "/Users/stenkavulova/Dropbox/Stenka_UWI/Topic_3/04_PROCESSED_DATA/20211014_zd_firstguess/TUCC/20211014_TUCC_final.RData")
+
+#write.csv(TUCC_final, file = "/Users/stenkavulova/Dropbox/Stenka_UWI/Topic_3/04_PROCESSED_DATA/20211014_zd_firstguess/TUCC/20211014_TUCC_final.csv", row.names = FALSE)
+
+```
+

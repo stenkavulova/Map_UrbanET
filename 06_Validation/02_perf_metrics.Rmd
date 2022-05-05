@@ -1,0 +1,138 @@
+---
+title: "Performance metrics (TUCC 2020)"
+author: "Stenka Vulova"
+date: "22 Nov. 2021"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+I will calculate the performance metrics for TUCC 2020.  
+I am comparing the weighted averages of footprints extracted from the area around the towers to the EC data.  
+
+The EC data went through quality control. 
+
+
+# Libraries 
+
+```{r libraries, include  = FALSE }
+
+library(sp)
+library(raster)
+library(rgdal)
+library(lubridate)
+library(maptools)
+library(ggplot2)
+library(tidyr)
+library(plyr)
+library(dplyr)
+library(FSA) # Dunns test
+library(RColorBrewer)
+library(reshape2)
+library(scales)
+library(hydroGOF) # performance metrics
+
+library(janitor)
+
+# machine learning libraries 
+library(caret)
+#library(CAST)
+library(doSNOW) # do both_readying in parallel
+library(doParallel) 
+#library(gbm)
+library(AppliedPredictiveModeling)
+library(randomForest)
+#library(nnet) # avNNet
+
+# Benchmarking 
+library(tictoc)
+
+```
+
+# Load EC data 
+
+```{r load EC dataset }
+
+load("/Users/stenkavulova/Dropbox/Stenka_UWI/Topic_3/04_PROCESSED_DATA/20211026_QC/TUCC/06_add_NDVI/TUCC_w_NDVI.RData")
+
+glimpse(TUCC_w_NDVI)
+
+EC_ET = TUCC_w_NDVI %>% 
+  dplyr::select(timestamp, ET)
+
+# Subset to 2020 
+EC_ET$Year = lubridate::year(EC_ET$timestamp)
+
+EC_ET_20 = subset(EC_ET, Year == 2020)
+
+summary(EC_ET_20)
+nrow(EC_ET_20) # 7776
+
+```
+
+# Load predicted ET 
+
+It was extracted with footprints from predicted ET maps. 
+The ET predictions (maps) were generated from a model trained in 2020. 
+
+```{r load predicted ET }
+
+load("/Users/stenkavulova/Dropbox/Stenka_UWI/Topic_3/05_RESULTS/20211117_ETmaps_ftp/2020/TUCC/FP_TUCC_ET_20_df.RData")
+
+summary(FP_TUCC_ET_20_df)
+
+FP_ET = FP_TUCC_ET_20_df %>% 
+  dplyr::select(timestamp, ET_FP)
+
+# Merge the two 
+preddf = dplyr::left_join(EC_ET_20, FP_ET)
+
+glimpse(preddf)
+summary(preddf)
+
+```
+
+# Metrics
+
+```{r metrics }
+
+caret::RMSE(preddf$ET, preddf$ET_FP) # 0.02107674
+
+caret::R2(preddf$ET, preddf$ET_FP) # 0.4851754
+
+```
+
+## Metrics table 
+
+```{r metrics table }
+
+metrics_Test20_TUCC_RF = 
+  data.frame(Tower_test = "TUCC",
+              Year_test = "20",
+             
+             Model = "RF", 
+             
+             RMSE = hydroGOF::rmse(preddf$ET_FP, preddf$ET),
+             
+             ME = hydroGOF::me(sim = preddf$ET_FP, obs = preddf$ET),
+             
+             pbias = hydroGOF::pbias(sim = preddf$ET_FP, obs = preddf$ET),
+             
+             R2 = caret::R2(preddf$ET_FP, preddf$ET),
+             
+             NSE = hydroGOF::NSE(sim = preddf$ET_FP, obs = preddf$ET),
+
+             MAE = hydroGOF::mae(sim = preddf$ET_FP, obs = preddf$ET), 
+
+             NRMSE = hydroGOF::nrmse(sim = preddf$ET_FP, obs = preddf$ET, norm = "maxmin") )
+
+metrics_Test20_TUCC_RF
+
+# save
+
+#write.csv(metrics_Test20_TUCC_RF, file = "/Users/stenkavulova/Dropbox/Stenka_UWI/Topic_3/05_RESULTS/20211118_metrics_RF/Test2020/TestTUCC/metrics_Test20_TUCC_RF.csv", row.names = FALSE)
+
+#save(metrics_Test20_TUCC_RF, file = "/Users/stenkavulova/Dropbox/Stenka_UWI/Topic_3/05_RESULTS/20211118_metrics_RF/Test2020/TestTUCC/metrics_Test20_TUCC_RF.RData")
+
+```
+

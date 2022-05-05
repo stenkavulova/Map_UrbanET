@@ -1,0 +1,322 @@
+---
+title: "Extract ETo from kriged data"
+author: "Stenka Vulova"
+date: "19 Oct. 2021"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+Now, I will extract ETo from the kriged dataset. 
+
+```{r Libraries, include = FALSE }
+
+library(sp)
+library(raster)
+library(rgdal)
+library(lubridate)
+library(maptools)
+library(ggplot2)
+library(tidyr)
+library(plyr)
+library(dplyr)
+library(RColorBrewer)
+library(reshape2)
+library(scales)
+
+# ADR libraries
+
+library(ggspatial)
+library(gstat)
+library(mapview)
+library(rdwd)
+library(leaflet)
+library(tidyverse)
+library(lubridate)
+library(sf)
+library(WindVerification) 
+library(xts)
+library(MeTo)
+#install.packages('bit64')
+library('bit64')
+library(devtools)
+
+# Benchmarking 
+library(tictoc)
+
+```
+
+# Load data
+
+## Berlin extent shapefile 
+
+```{r import Berlin shape }
+
+# Copernicus Berlin shape 
+
+berlin_shape <- readOGR(dsn='/Users/stenkavulova/Dropbox/Stenka_UWI/Topic_1/03_RAW_DATA/Copernicus/Urban_Atlas_2012/DE001L1_BERLIN/Shapefiles',layer='DE001L1_BERLIN_CityBoundary') # shapefile with Berlin extent 
+
+crs(berlin_shape)
+
+# change CRS of berlin_shape to match USGS products 
+berlin_shape <- spTransform(berlin_shape, CRS("+proj=utm +zone=33 +datum=WGS84 +units=m +no_defs +ellps=WGS84 +towgs84=0,0,0"))
+
+plot(berlin_shape)
+
+# new Berlin shape with longitude and latitude (not UTM)
+#pro_berlin_shape <- spTransform(berlin_shape, CRS("+proj=longlat +zone=33 +datum=WGS84 +units=m +no_defs +ellps=WGS84 +towgs84=0,0,0"))
+
+#plot(pro_berlin_shape)
+
+```
+
+## Load kriged ETo
+
+```{r Load kriged ETo }
+
+load("/Users/stenkavulova/Dropbox/Stenka_UWI/Topic_3/04_PROCESSED_DATA/20211019_halfh_kriged_ETo/krg_var3.RData")
+
+```
+
+## Load original data 
+
+This was the ETo data that was kriged. 
+
+```{r load original data }
+
+load("/Users/stenkavulova/Dropbox/Stenka_UWI/Topic_3/06_R_SCRIPTS/20210716_ETo_interpol/station_70km_ETo.RData")
+load("/Users/stenkavulova/Dropbox/Stenka_UWI/Topic_3/04_PROCESSED_DATA/20211018_ETo/Halfhourly/ETo_halfhour_ws2.RData")
+```
+
+# Create tower points
+
+## ROTH 
+
+```{r create ROTH }
+
+# Site TU Berlin Rothenburg (ROTH) - site code in our database: rothenburg
+#- active since 06/2018
+#- (Y) Lat.: 52.457232°
+#- (X) Lon.: 13.315827°
+
+ROTH_pt = data.frame(x = 13.315827, y = 52.457232)
+
+coordinates(ROTH_pt) = c("x", "y") 
+proj4string(ROTH_pt) <- CRS("+proj=longlat +datum=WGS84")
+ROTH_pt_utm <- spTransform(ROTH_pt, "+proj=utm +zone=33 +datum=WGS84 +units=m +no_defs")
+
+plot(berlin_shape)
+plot(ROTH_pt_utm, add = TRUE)
+
+```
+
+## TUCC 
+
+```{r create TUCC }
+
+#Site TU Berlin Campus Charlottenburg (TUCC) - site code in our database: tumainroof
+#- active since: 07/2014
+#- Lat.: 52.512283°
+#- Lon.: 13.327855°
+
+
+TUCC_pt = data.frame(x = 13.327855, y = 52.512283 )
+
+coordinates(TUCC_pt) = c("x", "y") 
+proj4string(TUCC_pt) <- CRS("+proj=longlat +datum=WGS84")
+TUCC_pt_utm <- spTransform(TUCC_pt, "+proj=utm +zone=33 +datum=WGS84 +units=m +no_defs")
+
+plot(berlin_shape)
+plot(TUCC_pt_utm, add = TRUE)
+
+```
+
+# Extract ETo 
+
+## Check CRS is the same
+
+```{r CRS check }
+
+plot(krg_var3[[666]])
+plot(berlin_shape, add = TRUE)
+
+crs( krg_var3[[666]] ) 
+
+crs(ROTH_pt_utm) 
+
+#CRS arguments:
+# +proj=utm +zone=33 +datum=WGS84 +units=m +no_defs +ellps=WGS84 +towgs84=0,0,0 
+#CRS arguments:
+# +proj=utm +zone=33 +datum=WGS84 +units=m +no_defs +ellps=WGS84 +towgs84=0,0,0 
+
+
+```
+
+## ROTH
+
+```{r extract ROTH }
+
+n = nrow(ETo_halfhour_ws2)
+n
+
+Inputs_ROTH <- NULL
+
+tic("Extracting ETo") # tic - Starts the timer and stores the start time and the message on the stack.
+
+for (i in 1:n) {
+  Inputs_ROTH$ETo[i] <- raster::extract(krg_var3[[i]], ROTH_pt_utm)
+}
+
+toc(log = TRUE) #Notes the current timer and computes elapsed time since the matching call to tic().
+# When quiet is FALSE, prints the associated message and the elapsed time.
+
+# Transforming SpatialPoints to the CRS of the Raster
+# error message gone since I used ROTH_pt_utm! 
+
+# Extracting ETo: 7.99 sec elapsed
+
+plot(Inputs_ROTH$ETo)
+summary(Inputs_ROTH$ETo)
+
+```
+
+```{r create df ROTH }
+
+Extracted_ETo_ROTH = ETo_halfhour_ws2 %>% 
+  dplyr::select(timestamp)
+
+glimpse(Extracted_ETo_ROTH)
+
+Extracted_ETo_ROTH$ETo_krg = Inputs_ROTH$ETo
+
+Extracted_ETo_ROTH$Tower = "ROTH"
+
+```
+
+## TUCC
+
+```{r extract TUCC }
+
+Inputs_TUCC <- NULL
+
+tic("Extracting ETo") # tic - Starts the timer and stores the start time and the message on the stack.
+
+for (i in 1:n) {
+  Inputs_TUCC$ETo[i] <- raster::extract(krg_var3[[i]], TUCC_pt_utm)
+}
+
+toc(log = TRUE) #Notes the current timer and computes elapsed time since the matching call to tic().
+# When quiet is FALSE, prints the associated message and the elapsed time.
+
+# Transforming SpatialPoints to the CRS of the Raster
+# error message gone since I used TUCC_pt_utm! 
+
+# Extracting ETo: 6.81 sec elapsed
+
+plot(Inputs_TUCC$ETo)
+summary(Inputs_TUCC$ETo)
+
+```
+
+```{r create df TUCC }
+
+Extracted_ETo_TUCC = ETo_halfhour_ws2 %>% 
+  dplyr::select(timestamp)
+
+glimpse(Extracted_ETo_TUCC)
+
+Extracted_ETo_TUCC$ETo_krg = Inputs_TUCC$ETo
+
+Extracted_ETo_TUCC$Tower = "TUCC"
+
+```
+
+
+# Compare kriged ETo to DWD ETo
+
+## ROTH
+
+I am comparing kriged ETo extracted at ROTH to ETo calculated for Berlin-Dahlem (station ID # 403).
+
+```{r compare ROTH }
+
+Extracted_ETo_ROTH$ETo_Dahlem = ETo_halfhour_ws2$ID_403
+
+cor.test(Extracted_ETo_ROTH$ETo_krg, Extracted_ETo_ROTH$ETo_Dahlem)
+
+ggplot()+
+  geom_line(data = Extracted_ETo_ROTH, aes (x = timestamp, y = ETo_Dahlem), color = "blue")+
+  geom_line(data = Extracted_ETo_ROTH, aes (x = timestamp, y = ETo_krg), color = "red")
+
+ggplot(data = Extracted_ETo_ROTH, aes(x = ETo_Dahlem, y = ETo_krg) )+
+  geom_point(color = "green")+
+  geom_smooth()
+
+
+```
+
+# Compare kriged ETo to DWD ETo
+
+## TUCC
+
+I am comparing kriged ETo extracted at TUCC to ETo calculated for Berlin-Tegel (station ID # 430).
+
+```{r compare TUCC }
+
+Extracted_ETo_TUCC$ETo_Tegel = ETo_halfhour_ws2$ID_430
+
+cor.test(Extracted_ETo_TUCC$ETo_krg, Extracted_ETo_TUCC$ETo_Tegel)
+
+ggplot()+
+  geom_line(data = Extracted_ETo_TUCC, aes (x = timestamp, y = ETo_Tegel), color = "blue")+
+  geom_line(data = Extracted_ETo_TUCC, aes (x = timestamp, y = ETo_krg), color = "red")
+
+ggplot(data = Extracted_ETo_TUCC, aes(x = ETo_Tegel, y = ETo_krg) )+
+  geom_point(color = "green")+
+  geom_smooth()
+
+
+```
+
+# Compare 2 kriged ETos
+
+```{r compare 2 kriged ETos }
+
+compare_krg = Extracted_ETo_ROTH %>% 
+  dplyr::select(timestamp, ETo_krg)
+
+names(compare_krg)[names(compare_krg) == 'ETo_krg'] <- 'ETo_ROTH'
+compare_krg$ETo_TUCC = Extracted_ETo_TUCC$ETo_krg
+
+cor.test(compare_krg$ETo_TUCC, compare_krg$ETo_ROTH)
+
+ggplot()+
+  geom_line(data = compare_krg, aes (x = timestamp, y = ETo_TUCC), color = "blue")+
+  geom_line(data = compare_krg, aes (x = timestamp, y = ETo_ROTH), color = "red")
+
+ggplot(data = compare_krg, aes(x = ETo_ROTH, y = ETo_TUCC) )+
+  geom_point(color = "green")+
+  geom_smooth()
+
+```
+
+# Save kriged ETo 
+
+```{r save kriged ETo }
+
+Extracted_ETo_ROTH$ETo_Dahlem = NULL
+Extracted_ETo_TUCC$ETo_Tegel = NULL
+
+#save(Extracted_ETo_ROTH, file = "/Users/stenkavulova/Dropbox/Stenka_UWI/Topic_3/04_PROCESSED_DATA/20211019_halfh_kriged_ETo/Towers_extracted/Extracted_ETo_ROTH.RData")
+
+#write.csv(Extracted_ETo_ROTH, file = "/Users/stenkavulova/Dropbox/Stenka_UWI/Topic_3/04_PROCESSED_DATA/20211019_halfh_kriged_ETo/Towers_extracted/Extracted_ETo_ROTH.csv",
+    #      row.names = FALSE )
+
+#save(Extracted_ETo_TUCC, file = "/Users/stenkavulova/Dropbox/Stenka_UWI/Topic_3/04_PROCESSED_DATA/20211019_halfh_kriged_ETo/Towers_extracted/Extracted_ETo_TUCC.RData")
+
+#write.csv(Extracted_ETo_TUCC, file = "/Users/stenkavulova/Dropbox/Stenka_UWI/Topic_3/04_PROCESSED_DATA/20211019_halfh_kriged_ETo/Towers_extracted/Extracted_ETo_TUCC.csv",
+     #     row.names = FALSE )
+
+
+```
+

@@ -1,0 +1,238 @@
+---
+title: "05) Apply QC (TUCC)"
+author: "Stenka Vulova"
+date: "27 Oct. 2021"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+I am going to apply the quality control (QC) steps now. I am following the QC procedure in Vulova et al. (2021).
+
+
+# Libraries 
+
+```{r libraries, include = FALSE }
+
+library(sp)
+library(raster)
+library(rgdal)
+library(lubridate)
+library(maptools)
+library(ggplot2)
+library(plyr)
+library(dplyr)
+library(grid)
+library(spatstat)
+library(sf)
+library(readr)
+library(RColorBrewer)
+library(reshape2)
+library(scales)
+
+library(tictoc) # benchmarking 
+library(spatialEco) # for weighted_footprint function 
+
+library(openair)
+library(water)
+library(stats)
+
+library(tidyverse)  # separate function
+library(xts)        # time series
+#library(TigR)       # time series apply.hourly function
+library(MeTo)       # VP function
+#library(FREddyPro)  # cleanFluxes with quality flag - remove outlier and clean SD
+library(suncalc)    # getSunlightTimes
+
+```
+
+The older package is no longer in the CRAN. 
+https://cran.r-project.org/src/contrib/Archive/FREddyPro/ 
+
+https://support.rstudio.com/hc/en-us/articles/219949047-Installing-older-versions-of-packages 
+
+```{r Freddypro library }
+
+# https://cran.r-project.org/src/contrib/Archive/FREddyPro/FREddyPro_1.0.tar.gz
+
+#packageurl <- "https://cran.r-project.org/src/contrib/Archive/FREddyPro/FREddyPro_1.0.tar.gz"
+#install.packages(packageurl, repos=NULL, type="source")
+
+library(FREddyPro)
+  
+```
+
+# Data import 
+
+```{r data import }
+
+load("/Users/stenkavulova/Dropbox/Stenka_UWI/Topic_3/04_PROCESSED_DATA/20211026_QC/TUCC/03_precip_filter/TUCC_QC_precip.RData")
+
+str(TUCC_QC_precip)
+
+```
+
+# Check time period
+
+I want to train with 2019 data/ test with 2020 data (and vice versa).
+
+```{r Time period }
+
+min(TUCC_QC_precip$timestamp)
+max(TUCC_QC_precip$timestamp)
+
+```
+# Original data availability 
+
+How much data was there originally?
+
+```{r Original data availability }
+
+TUCC_1 = TUCC_QC_precip[!is.na(TUCC_QC_precip$ET), ]
+nrow(TUCC_1)
+
+summary(TUCC_QC_precip$ET)
+
+```
+
+# Data filtering 
+
+I decided to apply the following subsetting/ QC procedures to the datasets:
+
+1) LE.clean.sd  
+2) Remove 4 hours after precipitation events 
+3) Thresholds filter 
+4) Remove ET lower than 0 (keep only positive ET)
+
+# 1) Remove ET lower than 0 
+
+This is a new addition: I am removing ET with a value lower than 0 (only positive ET allowed).   
+
+Remove negative ET from dataset before modelling!  
+
+Hamideh/ Fred: remove negative ET from the dataset! Negative ET values do not represent evapotranspiration/ the water balance accurately. Negative ET is likely condensation. Negative ET does not make sense from the water balance perspective. 
+If someone asks: the negative values have a different meaning for water balance: downward directed water vapor flux.   
+
+Every flux has sources and sinks (Fred). 
+
+```{r Subset to positive ET}
+
+TUCC_pos = subset(TUCC_QC_precip, ET >= 0 )
+nrow(TUCC_pos)
+
+# check how many ET values
+TUCC_2 = TUCC_pos[!is.na(TUCC_pos$ET), ]
+nrow(TUCC_2)
+
+summary(TUCC_pos$ET)
+boxplot(TUCC_pos$ET)
+boxplot(TUCC_pos$LE)
+
+# save 
+
+#save(TUCC_pos, file = "/Users/stenkavulova/Dropbox/Stenka_UWI/Topic_3/04_PROCESSED_DATA/20211026_QC/TUCC/04_apply_QC/TUCC_pos.RData")
+
+#write.csv(TUCC_pos, file = "/Users/stenkavulova/Dropbox/Stenka_UWI/Topic_3/04_PROCESSED_DATA/20211026_QC/TUCC/04_apply_QC/TUCC_pos.csv", row.names = FALSE )
+
+```
+
+# 2) Freddypro filters 
+
+## A) LE.clean.sd 
+
+`# sdCor: Logical. If TRUE de-spiking based on standard deviation is applied.`  
+
+`# sdTimes: A number showing how many times the gas flux data have to be greater than the SD to remove them as spikes. The default value is 1 SD.`  
+
+`# distCor: Logical. If TRUE gas flux data are de-spiked using a distribution calculated for every half hour.`  
+
+`ECdata_clean2=FREddyPro::cleanFluxes(TUCC_clean, gas="LE", sdCor=TRUE, sdTimes=5,` 
+`                          distCor=TRUE, timesList=5,`   
+`                          plot=FALSE, na.value="NA")`  
+
+```{r LE.clean.sd }
+
+TUCC_clean.sd = TUCC_pos[!is.na(TUCC_pos$LE.clean.sd), ]
+nrow(TUCC_clean.sd)
+
+boxplot(TUCC_clean.sd$LE)
+
+```
+
+## B) Thresholds filtering 
+
+`ECdata_clean1= FREddyPro::cleanFluxes(data = TUCC_clean, gas="LE", qcFlag=2,`  
+ `                         thresholdList=list(LE=c(-100,500)),`  
+ `                         plot=FALSE, na.value="NA")`  
+
+```{r thresholds filter }
+
+TUCC_thres = TUCC_clean.sd[!is.na(TUCC_clean.sd$LE.clean.thres), ]
+
+nrow(TUCC_thres)
+
+summary(TUCC_thres$LE)
+boxplot(TUCC_thres$LE)
+
+TUCC_freddy = TUCC_thres
+
+# save 
+
+#save(TUCC_freddy, file = "/Users/stenkavulova/Dropbox/Stenka_UWI/Topic_3/04_PROCESSED_DATA/20211026_QC/TUCC/04_apply_QC/TUCC_freddy.RData")
+
+#write.csv(TUCC_freddy, file = "/Users/stenkavulova/Dropbox/Stenka_UWI/Topic_3/04_PROCESSED_DATA/20211026_QC/TUCC/04_apply_QC/TUCC_freddy.csv", row.names = FALSE )
+
+```
+
+# 3) Rain filtering 
+
+I will remove 4 hours after rain. (Only >4 hours after rain remains). 
+
+"EddyPro output data at 30-min resolution with quality flag 2 were excluded (Foken, 2016)as well as data during and 4 h after precipitation events based upon DWD precipitation data." (Vulova et al. 2021)
+
+```{r precipitation filtering }
+
+# remove 4 hours after rain 
+
+TUCC_rain = subset(TUCC_freddy, prec.window == "5 hours or more" | 
+                      prec.window == "4.5 hours" )
+
+nrow(TUCC_rain)
+
+summary(TUCC_rain$LE)
+boxplot(TUCC_rain$LE)
+
+unique(TUCC_rain$prec.window)
+
+
+
+```
+
+# Check that flag = 2 is removed 
+
+I want to check if flag = 2 is removed already. 
+
+Fred: "the full data set from both towers with all quality flags are attached. The colum names in these files consist of:  
+
+variable name + unit + original column name of this variable in the eddypro output file or original column name of this variable in our rawdata files. You can use the "quality flags" for quality control of the fluxes **(0=very good, 1=good, 2=bad)**.  
+
+These "quality flags" are from EddyPro software and based on various criteria. Further you can use "qc_check_eddyPro_UCO.R" from Justus for quality control of latent heat flux." 
+
+```{r check flag 2 removed }
+
+TUCC_rain = TUCC_rain[!(TUCC_rain$qc_LE == 2), ]
+nrow(TUCC_rain)
+
+summary(TUCC_rain$qc_LE)
+
+# save 
+
+#save(TUCC_rain, file = "/Users/stenkavulova/Dropbox/Stenka_UWI/Topic_3/04_PROCESSED_DATA/20211026_QC/TUCC/04_apply_QC/TUCC_rain.RData")
+
+#write.csv(TUCC_rain, file = "/Users/stenkavulova/Dropbox/Stenka_UWI/Topic_3/04_PROCESSED_DATA/20211026_QC/TUCC/04_apply_QC/TUCC_rain.csv", row.names = FALSE )
+
+```
+Great, QC flag 2 is already removed. 
+
+
+

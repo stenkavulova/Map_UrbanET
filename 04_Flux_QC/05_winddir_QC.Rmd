@@ -1,0 +1,102 @@
+---
+title: "05) Wind direction QC"
+author: "Stenka Vulova"
+date: "27 Oct. 2021"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+# Libraries 
+
+```{r libraries, include = FALSE }
+
+library(sp)
+library(raster)
+library(rgdal)
+library(lubridate)
+library(maptools)
+library(ggplot2)
+library(plyr)
+library(dplyr)
+library(grid)
+library(spatstat)
+library(sf)
+library(readr)
+library(RColorBrewer)
+library(reshape2)
+library(scales)
+
+library(tictoc) # benchmarking 
+library(spatialEco) # for weighted_footprint function 
+
+library(openair)
+library(water)
+library(stats)
+library(zoo)
+library(water)
+
+library(MeTo)
+
+```
+
+The older package is no longer in the CRAN. 
+https://cran.r-project.org/src/contrib/Archive/FREddyPro/ 
+
+https://support.rstudio.com/hc/en-us/articles/219949047-Installing-older-versions-of-packages 
+
+```{r Freddypro library }
+
+# https://cran.r-project.org/src/contrib/Archive/FREddyPro/FREddyPro_1.0.tar.gz
+
+#packageurl <- "https://cran.r-project.org/src/contrib/Archive/FREddyPro/FREddyPro_1.0.tar.gz"
+#install.packages(packageurl, repos=NULL, type="source")
+
+library(FREddyPro)
+  
+```
+
+# Load data 
+
+```{r load data}
+
+load("/Users/stenkavulova/Dropbox/Stenka_UWI/Topic_3/04_PROCESSED_DATA/20211026_QC/TUCC/04_apply_QC/TUCC_rain.RData")
+
+nrow(TUCC_rain)
+
+boxplot(TUCC_rain$ET)
+
+```
+
+# Wind direction filter 
+
+**Vulova et al. 2021 says 17 to 35. - DOUBLE CHECK!** 
+
+Fred, 28 Oct. 2021: "at TUCC the sonic points at 206 deg - > the mounting setup is at 26 deg and we exclude +9 deg and - 9 deg ---> sector 17 degrees –35 degrees can be excluded."
+
+I am also excluding 17 degrees and 35 degrees themselves. 
+
+```{r wind direction filter }
+
+TUCC_wind = subset(TUCC_rain, wind_dir < 17 | wind_dir > 35 )
+nrow(TUCC_wind) # 15700 obs. 
+
+```
+
+# Save TUCC data 
+
+The whole datasets refer to those where the time period or columns are not further subsetted for modelling. However, all QC is already applied. 
+
+```{r save data }
+
+TUCC_whole = TUCC_wind
+
+glimpse(TUCC_whole)
+
+#save(TUCC_whole, file = "/Users/stenkavulova/Dropbox/Stenka_UWI/Topic_3/04_PROCESSED_DATA/20211026_QC/TUCC/05_winddir_QC/TUCC_whole.RData")
+
+#write.csv(TUCC_whole, file = "/Users/stenkavulova/Dropbox/Stenka_UWI/Topic_3/04_PROCESSED_DATA/20211026_QC/TUCC/05_winddir_QC/TUCC_whole.csv", row.names = FALSE )
+
+```
+
+

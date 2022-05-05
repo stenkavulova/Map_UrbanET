@@ -1,0 +1,108 @@
+---
+title: "06) Add NDVI (TUCC QC)"
+author: "Stenka Vulova"
+date: "30 Oct. 2021"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+I am joining the NDVI footprints results with the other TUCC data (which already underwent quality control).
+
+# Libraries 
+
+```{r libraries, include = FALSE }
+
+library(sp)
+library(raster)
+library(rgdal)
+library(lubridate)
+library(maptools)
+library(ggplot2)
+library(plyr)
+library(dplyr)
+library(grid)
+library(spatstat)
+library(sf)
+library(readr)
+library(RColorBrewer)
+library(reshape2)
+library(scales)
+
+library(tictoc) # benchmarking 
+library(spatialEco) # for weighted_footprint function 
+
+library(openair)
+library(water)
+library(stats)
+library(zoo)
+library(water)
+
+library(MeTo)
+
+```
+
+# Load data 
+
+## QCed data 
+
+This data underwent all QC, as spelled out in Vulova et al. (2021).
+
+```{r load QCed data }
+
+load("/Users/stenkavulova/Dropbox/Stenka_UWI/Topic_3/04_PROCESSED_DATA/20211026_QC/TUCC/05_winddir_QC/TUCC_whole.RData")
+
+head(TUCC_whole$timestamp)
+
+glimpse(TUCC_whole) # 15700 obs. 
+
+```
+
+## NDVI data 
+
+```{r NDVI data }
+
+load("/Users/stenkavulova/Dropbox/Stenka_UWI/Topic_3/04_PROCESSED_DATA/20211018_NDVI_ftp/TUCC/2019/FP_TUCC_NDVI_2019.RData")
+load("/Users/stenkavulova/Dropbox/Stenka_UWI/Topic_3/04_PROCESSED_DATA/20211018_NDVI_ftp/TUCC/2020/FP_TUCC_NDVI_2020.RData")
+
+FP_TUCC_NDVI = dplyr::full_join(FP_TUCC_NDVI_2019_df, FP_TUCC_NDVI_2020_df)
+
+ggplot(FP_TUCC_NDVI) + 
+  geom_line(aes(x = timestamp, y = NDVI_FP)) +
+  geom_line(aes(x = timestamp, y = NDVI_point), color = "green") +
+  geom_line(aes(x = timestamp, y = NDVI_buffer), color = "red")
+
+head(FP_TUCC_NDVI$timestamp)
+
+glimpse(FP_TUCC_NDVI)
+
+```
+
+# Merge data
+
+```{r Merge data }
+
+TUCC_NDVI = dplyr::full_join(FP_TUCC_NDVI, TUCC_whole) # 33117 obs.
+nrow(TUCC_NDVI)
+
+# remove NAs of ET 
+TUCC_NDVI2 = TUCC_NDVI[!is.na(TUCC_NDVI$ET), ]
+
+summary(TUCC_NDVI2)
+glimpse(TUCC_NDVI2)
+nrow(TUCC_NDVI2)
+
+```
+
+## Save 
+
+```{r save }
+
+TUCC_w_NDVI = TUCC_NDVI2
+
+#save(TUCC_w_NDVI, file = "/Users/stenkavulova/Dropbox/Stenka_UWI/Topic_3/04_PROCESSED_DATA/20211026_QC/TUCC/06_add_NDVI/TUCC_w_NDVI.RData")
+
+#write.csv(TUCC_w_NDVI, file = "/Users/stenkavulova/Dropbox/Stenka_UWI/Topic_3/04_PROCESSED_DATA/20211026_QC/TUCC/06_add_NDVI/TUCC_w_NDVI.csv", row.names = FALSE )
+
+```
+

@@ -1,0 +1,118 @@
+---
+title: "Create summer ET raster"
+author: "Stenka Vulova"
+date: "7 Feb. 2022"
+output: html_document
+---
+
+# Libraries 
+
+```{r libraries, include = FALSE }
+
+library(sp)
+library(raster)
+library(rgdal)
+library(lubridate)
+library(maptools)
+library(ggplot2)
+library(tidyr)
+library(plyr)
+library(dplyr)
+library(RColorBrewer)
+library(reshape2)
+library(scales)
+library(readr)
+library(rgeos)
+
+library(grid)
+library(spatstat)
+library(sf)
+
+library(zoo)
+library(tictoc) # benchmarking
+
+library(pbapply)
+
+#devtools::install_github("AlbyDR/rSCOPE")
+
+#library(rSCOPE)
+
+library(SpaDES.tools) # splitRaster
+
+library(terra)
+
+```
+
+# Load data
+
+## Summertime ET 
+
+June, July, and August - monthly ET this time
+
+https://stackoverflow.com/questions/18028225/r-list-files-with-multiple-conditions
+
+```{r load maps  }
+
+filenames = list.files( path = "D:/Stenka_UWI/Topic_3/05_RESULTS/20220128_monthly_ET_maps",
+                        pattern = '^ETmonthly_2019_06|^ETmonthly_2019_07|^ETmonthly_2019_08',
+                        full.names = TRUE )
+
+length(filenames) # 3
+
+head(filenames)
+tail(filenames)
+
+# Load as rast 
+
+l = lapply(filenames, terra::rast)
+
+terra::plot(l[[3]], col = colorRampPalette(c("dark red", "red3", "orange1", 'lightgoldenrod1', "seagreen1", "dodgerblue4", "blue4"))(255))
+
+# Make a stack 
+
+stack = terra::rast(l)
+
+```
+
+# Avg summertime ET
+
+* Calculate average ET (mm/ month) for June-August 2019 
+
+```{r Avg summer }
+
+tic("mean")
+
+ET_summer_avg = terra::app(stack, fun = mean)
+
+toc()
+tic.clearlog() # mean: 2.97 sec elapsed
+
+terra::plot(ET_summer_avg, col = colorRampPalette(c("dark red", "red3", "orange1", 'lightgoldenrod1', "seagreen1", "dodgerblue4", "blue4"))(255))
+
+# convert to normal raster 
+
+ET_summer_avg_raster = raster::raster(ET_summer_avg)
+
+ET_summer_avg_raster
+#class      : RasterLayer 
+#dimensions : 3734, 7460, 27855640  (nrow, ncol, ncell)
+#resolution : 8.983153e-05, 8.983153e-05  (x, y)
+#extent     : 13.09016, 13.7603, 52.33953, 52.67496  (xmin, xmax, ymin, ymax)
+#crs        : +proj=longlat +datum=WGS84 +no_defs 
+#source     : memory
+#names      : mean 
+#values     : 0.4501819, 2.472704  (min, max)
+
+raster::plot(ET_summer_avg_raster, col = colorRampPalette(c("dark red", "red3", "orange1", 'lightgoldenrod1', "seagreen1", "dodgerblue4", "blue4"))(255),
+             zlim = c(0, 60))
+
+# save raster 
+
+#raster::writeRaster(ET_summer_avg_raster, 
+#                      filename = "D:/Stenka_UWI/Topic_3/05_RESULTS/20220207_summer_monthlyET/ETmonthly_summer_avg.tif",
+ #                     options='COMPRESS=LZW' )
+
+
+
+```
+

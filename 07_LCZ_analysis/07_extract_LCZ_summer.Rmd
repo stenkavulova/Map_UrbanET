@@ -1,0 +1,186 @@
+---
+title: "Extract summer (LCZ)"
+author: "Stenka Vulova"
+date: "18 Feb. 2022"
+output: html_document
+---
+
+I am now using the Generator LCZ (training data from Fenner 2017), with the Gaussian filter. 
+
+# Libraries 
+
+```{r libraries, include = FALSE }
+
+library(sp)
+library(raster)
+library(rgdal)
+library(lubridate)
+library(maptools)
+library(ggplot2)
+library(tidyr)
+library(plyr)
+library(dplyr)
+library(RColorBrewer)
+library(reshape2)
+library(scales)
+library(readr)
+library(rgeos)
+
+library(terra)
+
+library(grid)
+library(spatstat)
+library(sf)
+
+library(zoo)
+library(tictoc) # benchmarking
+
+library(pbapply)
+
+library(spatialEco) # for weighted_footprint function 
+
+library(caret)
+library(doSNOW) # do training in parallel
+library(doParallel) 
+library(randomForest)
+
+#devtools::install_github("AlbyDR/rSCOPE")
+
+#library(rSCOPE)
+
+library(exactextractr)
+
+```
+
+
+# Load summer ET 
+
+## ET 
+
+```{r load ET }
+
+ET_summer = raster::raster("D:/Stenka_UWI/Topic_3/05_RESULTS/20220207_summer_monthlyET/ETmonthly_summer_avg.tif")
+
+raster::plot(ET_summer, col = colorRampPalette(c("dark red", "red3", "orange1", 'lightgoldenrod1', "seagreen1", "dodgerblue4", "blue4"))(255))
+
+raster::crs(ET_summer)
+
+```
+
+# LCZ 
+
+```{r LCZ shapefile }
+
+LCZ = rgdal::readOGR(dsn = "D:/Stenka_UWI/Topic_3/04_PROCESSED_DATA/20220217_LCZ_shape_Gene", layer = "LCZ_Berlin",
+                    verbose = TRUE)
+
+# 13 features 
+
+#### convert to sf ####
+
+# convert to sf
+
+LCZ_sf = sf::st_as_sf(LCZ)
+
+```
+
+
+# Extract 
+
+```{r xtract }
+
+tic("extract")
+
+ex_LCZ = exact_extract(x = ET_summer, y = LCZ_sf)
+
+toc()
+
+tic.clearlog()
+
+# extract: 12.82 sec elapsed
+
+# Large list (13 elements)
+
+```
+
+# Explore 
+
+```{r explore }
+
+ex_LCZ_1 = ex_LCZ[[1]]
+
+glimpse(ex_LCZ_1)
+
+ex_LCZ_1$LCZ = LCZ_sf$LCZ_Gen_Fe[[1]]
+
+```
+
+# Function to add LCZ column 
+
+Function to add LCZ column 
+
+```{r function add column }
+
+# ex_LCZ = list of extracted values for Local Climate Zones
+# LCZ_sf: the sf polygon dataframe used to extract
+# numba: which dataframe in the list of (13) dataframes
+
+add_LCZ_column = function(ex_LCZ, LCZ_sf, numba) {
+  
+  ex_LCZ_new = ex_LCZ[[numba]]
+  ex_LCZ_new$LCZ = LCZ_sf$LCZ_Gen_Fe[[numba]]
+  return(ex_LCZ_new)
+  
+}
+
+```
+
+## test once 
+
+```{r Test once }
+
+ex_LCZ_2 = add_LCZ_column(ex_LCZ = ex_LCZ, LCZ_sf = LCZ_sf, numba = 2)
+
+glimpse(ex_LCZ_2)
+
+```
+## Apply to all
+
+```{r Apply to all }
+tic("add_LCZ_column")
+
+l_LCZ_dfs = pbapply::pblapply(1:13, function(i)
+  
+  add_LCZ_column(ex_LCZ = ex_LCZ, LCZ_sf = LCZ_sf, numba = i)
+  
+)
+
+toc()
+
+tic.clearlog()
+
+# add_LCZ_column: 0.39 sec elapsed
+
+
+```
+# Join dfs
+
+```{r join dfs }
+
+# join all
+
+LCZ_summer_ex = plyr::join_all(dfs = l_LCZ_dfs, type = "full")
+
+# probably should append next time .... this was not efficient
+
+glimpse(LCZ_summer_ex)
+
+# Rows: 28,829,322
+unique(LCZ_summer_ex$LCZ)
+#  "0"  "2"  "4"  "5"  "6"  "8"  "9"  "11" "12" "13" "14" "16" "17"
+
+# save 
+#save(LCZ_summer_ex, file = "D:/Stenka_UWI/Topic_3/05_RESULTS/20220218_ex_LCZ_Gen/summer/LCZ_summer_ex.RData")
+
+```
+

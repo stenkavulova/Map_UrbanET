@@ -1,0 +1,266 @@
+---
+title: "Coregister geodata (part 2)"
+author: "Stenka Vulova"
+date: "11/3/2021"
+output: html_document
+---
+
+I converted the geodata to long-lat. 
+Now I will crop them and then resample them.
+
+# Libraries 
+
+```{r libraries, include = FALSE }
+
+library(sp)
+library(raster)
+library(rgdal)
+library(lubridate)
+library(maptools)
+library(ggplot2)
+library(tidyr)
+library(plyr)
+library(dplyr)
+library(RColorBrewer)
+library(reshape2)
+library(scales)
+library(readr)
+library(rgeos)
+
+library(grid)
+library(spatstat)
+library(sf)
+
+library(zoo)
+library(tictoc) # benchmarking
+
+library(pbapply)
+
+library(spatialEco) # for weighted_footprint function 
+
+devtools::install_github("AlbyDR/rSCOPE")
+
+library(rSCOPE)
+
+```
+
+# NDVI 
+
+```{r load NDVI }
+
+
+NDVI_2019_DOY207 = raster::raster("D:/Stenka_UWI/Topic_3/06_R_SCRIPTS/20211102_coreg_geodata/NDVI_2019_DOY207.tif")
+
+NDVI_2019_DOY207
+
+plot(NDVI_2019_DOY207)
+
+
+```
+
+# BH
+
+```{r load BH }
+
+BH = raster::raster("D:/Stenka_UWI/Topic_3/04_PROCESSED_DATA/20211101_geodata_resamp/01_longlat/BH_longlat.tif")
+
+plot(BH, col=colorRampPalette(c("lightblue1", "navyblue", "forestgreen", 'yellow1', 'darkorange','red3', 'dark red'))(255),
+     zlim = c(0,25))
+BH
+
+```
+
+## Crop BH
+
+```{r crop BH }
+
+BH_crop = raster::crop(x = BH, y = NDVI_2019_DOY207)
+
+```
+
+## resample BH
+
+```{r resample BH}
+
+tic("resample")
+
+BH_proj = raster::resample(BH_crop, NDVI_2019_DOY207 )
+
+toc(log = TRUE) #Notes the current timer and computes elapsed time since the matching call to tic(). 
+
+# reset the tictoc log 
+tic.clearlog()
+
+# resample: 29.25 sec elapsed
+
+BH_proj
+NDVI_2019_DOY207
+
+NDVI_stack = raster::stack(NDVI_2019_DOY207, BH_proj, VH_proj, VF_proj, ISF_proj)
+plot(NDVI_stack)
+
+#writeRaster(BH_proj,
+ #           "D:/Stenka_UWI/Topic_3/04_PROCESSED_DATA/20211101_geodata_resamp/02_resample/BH_proj.tif",
+ #           options='COMPRESS=LZW')
+
+```
+
+# VH 
+
+```{r load VH}
+
+VH = raster::raster("D:/Stenka_UWI/Topic_3/04_PROCESSED_DATA/20211101_geodata_resamp/01_longlat/VH_longlat.tif")
+
+plot(VH, col=colorRampPalette(c("lightblue1", "navyblue", "forestgreen", 'yellow1', 'darkorange','red3', 'dark red'))(255),
+     zlim = c(0,30))
+VH
+
+```
+
+## crop VH 
+
+```{r crop VH }
+
+VH_crop = raster::crop(x = VH, y = NDVI_2019_DOY207)
+
+```
+
+## Aggregate
+
+Not doing.
+
+      input_raster <- raster::disaggregate(input_raster, dim(footprint)[1]/2)
+
+```{r aggregate VH }
+
+#dim(NDVI_2019_DOY207)[1]/2
+
+#VH_agg = raster::aggregate(x = VH_crop, fact = dim(NDVI_2019_DOY207)[1]/2 )
+
+```
+
+
+## resample VH
+
+```{r resample VH}
+
+tic("resample")
+
+NDVI_TUCC_ftp_proj = raster::resample(VH_crop, NDVI_2019_DOY207 )
+
+toc(log = TRUE) #Notes the current timer and computes elapsed time since the matching call to tic(). 
+
+# reset the tictoc log 
+tic.clearlog()
+
+# resample: 886.88 sec elapsed (14 min.)
+
+VH_proj = NDVI_TUCC_ftp_proj
+
+VH_proj
+NDVI_2019_DOY207
+
+NDVI_stack = raster::stack(NDVI_2019_DOY207, VH_proj)
+plot(NDVI_stack)
+
+#writeRaster(VH_proj,
+#            "D:/Stenka_UWI/Topic_3/04_PROCESSED_DATA/20211101_geodata_resamp/02_resample/VH_proj.tif",
+ #           options='COMPRESS=LZW')
+
+```
+
+
+# ISF 
+
+```{r load ISF }
+
+ISF = raster::raster("D:/Stenka_UWI/Topic_3/04_PROCESSED_DATA/20211101_geodata_resamp/01_longlat/ISF_longlat.tif")
+
+plot(ISF, col=colorRampPalette(c("lightblue1", "navyblue", "forestgreen", 'yellow1', 'darkorange','red3', 'dark red'))(255))
+ISF
+
+```
+
+## crop ISF 
+
+```{r crop ISF }
+
+ISF_crop = raster::crop(x = ISF, y = NDVI_2019_DOY207)
+
+```
+
+## resample ISF
+
+```{r resample ISF}
+
+tic("resample")
+
+ISF_proj = raster::resample(ISF_crop, NDVI_2019_DOY207 )
+
+toc(log = TRUE) #Notes the current timer and computes elapsed time since the matching call to tic(). 
+
+# reset the tictoc log 
+tic.clearlog()
+
+# resample: 972.75 sec elapsed (16 min.)
+
+ISF_proj
+NDVI_2019_DOY207
+
+NDVI_stack = raster::stack(NDVI_2019_DOY207, ISF_proj, VH_proj)
+plot(NDVI_stack)
+
+#writeRaster(ISF_proj,
+#            "D:/Stenka_UWI/Topic_3/04_PROCESSED_DATA/20211101_geodata_resamp/02_resample/ISF_proj.tif",
+ #           options='COMPRESS=LZW')
+
+```
+
+# VF 
+
+```{r Load VF }
+
+VF = raster::raster("D:/Stenka_UWI/Topic_3/04_PROCESSED_DATA/20211101_geodata_resamp/01_longlat/VF_longlat.tif")
+
+plot(VF, col=colorRampPalette(c("lightblue1", "navyblue", "forestgreen", 'yellow1', 'darkorange','red3', 'dark red'))(255))
+VF
+
+test_stack = raster::stack(ISF, VF, VH) # works! 
+plot(test_stack)
+
+```
+
+## crop VF 
+
+```{r crop VF }
+
+VF_crop = raster::crop(x = VF, y = NDVI_2019_DOY207)
+
+```
+
+## resample VF
+
+```{r resample VF}
+
+tic("resample")
+
+VF_proj = raster::resample(VF_crop, NDVI_2019_DOY207 )
+
+toc(log = TRUE) #Notes the current timer and computes elapsed time since the matching call to tic(). 
+
+# reset the tictoc log 
+tic.clearlog()
+
+# resample: 826.53 sec elapsed (13 min.)
+
+VF_proj
+NDVI_2019_DOY207
+
+NDVI_stack = raster::stack(NDVI_2019_DOY207, VF_proj, VH_proj, ISF_proj)
+plot(NDVI_stack)
+
+#writeRaster(VF_proj,
+#            "D:/Stenka_UWI/Topic_3/04_PROCESSED_DATA/20211101_geodata_resamp/02_resample/VF_proj.tif",
+#            options='COMPRESS=LZW')
+
+```

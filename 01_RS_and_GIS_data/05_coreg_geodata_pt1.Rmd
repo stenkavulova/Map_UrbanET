@@ -1,0 +1,226 @@
+---
+title: "Coregister predictors (2019)"
+author: "Stenka Vulova"
+date: "2 Nov. 2021"
+output: html_document
+---
+
+I am coregistering all predictor geodata. 
+
+Since the final maps in my paper should be in lon-lat, and my NDVI files are already in lon-lat:  
+It makes more sense to save the UTC geodata as lon-lat. 
+
+# Libraries 
+
+```{r libraries, include = FALSE }
+
+library(sp)
+library(raster)
+library(rgdal)
+library(lubridate)
+library(maptools)
+library(ggplot2)
+library(tidyr)
+library(plyr)
+library(dplyr)
+library(RColorBrewer)
+library(reshape2)
+library(scales)
+library(readr)
+library(rgeos)
+
+library(grid)
+library(spatstat)
+library(sf)
+
+library(zoo)
+library(tictoc) # benchmarking
+
+library(pbapply)
+
+library(spatialEco) # for weighted_footprint function 
+
+devtools::install_github("AlbyDR/rSCOPE")
+
+library(rSCOPE)
+
+```
+
+# NDVI 
+
+```{r load NDVI }
+
+NDVI_2019 = raster::brick("D:/Stenka_UWI/Topic_3/04_PROCESSED_DATA/20211004_NDVI_interpolated/2019/NDVI_Berlin_daily_2019.grd")
+
+plot(NDVI_2019[[207]])
+
+NDVI_2019_DOY207 = NDVI_2019[[207]]
+
+NDVI_2019_DOY207
+
+#writeRaster(NDVI_2019_DOY207,
+#            "D:/Stenka_UWI/Topic_3/06_R_SCRIPTS/20211102_coreg_geodata/NDVI_2019_DOY207.tif",
+#            options='COMPRESS=LZW')
+
+# I checked in QGIS: the original NDVI data is indeed 10 m x 10 m resolution!
+
+```
+
+
+# Building height (BH)
+
+(Urban Atlas) (used in Vulova et al. 2020) (10-m resolution) -> there is still only a 2012 version, so using that
+https://land.copernicus.eu/local/urban-atlas 
+
+```{r load BH }
+
+BH = raster::raster("D:/Stenka_UWI/Topic_3/03_RAW_DATA/Building_Height_2012/DE001L1_BERLIN_UA2012_DHM/DE001L1_BERLIN_UA2012_DHM.tif")
+
+plot(BH, col=colorRampPalette(c("lightblue1", "navyblue", "forestgreen", 'yellow1', 'darkorange','red3', 'dark red'))(255),
+     zlim = c(0,25))
+BH
+
+```
+
+## Change CRS
+
+```{r BH CRS }
+
+crs(BH)
+crs(NDVI_2019_DOY207)
+
+BH_longlat = raster::projectRaster(BH, crs = crs(NDVI_2019_DOY207),
+                               method = "bilinear")
+
+BH_longlat
+
+ncell(BH_longlat)
+ncell(NDVI_2019_DOY207)
+# NDVI raster is bigger. 
+
+#writeRaster(BH_longlat,
+#            "D:/Stenka_UWI/Topic_3/04_PROCESSED_DATA/20211101_geodata_resamp/01_longlat/BH_longlat.tif",
+ #           options='COMPRESS=LZW')
+
+```
+
+# Vegetation height (VH)
+
+(used in Vulova et al. 2021) (1-m resolution) from Berlin Environmental Atlas 
+
+```{r load VH }
+
+VH = raster::raster("D:/Stenka_UWI/Topic_2/04_PROCESSED_DATA/BH_VH_1m/VEG_DSM_Berlin_1m_noNA.tif")
+
+plot(VH, col=colorRampPalette(c("lightblue1", "navyblue", "forestgreen", 'yellow1', 'darkorange','red3', 'dark red'))(255), zlim = c(0,30))
+VH
+
+```
+## Change CRS
+
+```{r VH CRS }
+
+crs(VH)
+crs(NDVI_2019_DOY207)
+
+VH_longlat = raster::projectRaster(VH, crs = crs(NDVI_2019_DOY207),
+                               method = "bilinear")
+
+VH_longlat
+
+ncell(VH_longlat)
+ncell(NDVI_2019_DOY207)
+# VH raster is bigger. 
+
+#writeRaster(VH_longlat,
+#            "D:/Stenka_UWI/Topic_3/04_PROCESSED_DATA/20211101_geodata_resamp/01_longlat/VH_longlat.tif",
+#            options='COMPRESS=LZW')
+
+```
+
+# Impervious surface fraction (ISF)
+
+(Urban Atlas) (polygons) already re-derived using Urban Atlas 2018 
+
+```{r load ISF }
+
+ISF = raster::raster("D:/Stenka_UWI/Topic_3/04_PROCESSED_DATA/20210823_surface_fractions/impervious/Berlin_impervious_fraction_1m.tif")
+
+plot(ISF, col=colorRampPalette(c("lightblue1", "navyblue", "forestgreen", 'yellow1', 'darkorange','red3', 'dark red'))(255))
+
+ISF
+
+```
+
+## Change CRS
+
+```{r ISF CRS }
+
+crs(ISF)
+crs(NDVI_2019_DOY207)
+
+tic("project raster")
+
+ISF_longlat = raster::projectRaster(ISF, crs = crs(NDVI_2019_DOY207),
+                               method = "bilinear")
+
+toc(log = TRUE)
+
+# reset the tictoc log 
+tic.clearlog()
+
+# project raster: 2991.31 sec elapsed
+
+ISF_longlat
+
+ncell(ISF_longlat)
+ncell(NDVI_2019_DOY207)
+
+#writeRaster(ISF_longlat,
+ #           "D:/Stenka_UWI/Topic_3/04_PROCESSED_DATA/20211101_geodata_resamp/01_longlat/ISF_longlat.tif",
+ #           options='COMPRESS=LZW')
+
+```
+
+# Vegetation fraction (VF)
+
+using Alby’s dataset based upon Berlin Environmental Atlas data "green volume"
+
+```{r load VF }
+
+VF = raster::raster("D:/Stenka_UWI/Topic_3/04_PROCESSED_DATA/20210823_surface_fractions/vegfrac_ADR/vegfrac_1m.tif")
+
+plot(VF, col=colorRampPalette(c("lightblue1", "navyblue", "forestgreen", 'yellow1', 'darkorange','red3', 'dark red'))(255))
+VF
+
+```
+
+## Change CRS
+
+```{r VF CRS }
+
+crs(VF)
+crs(NDVI_2019_DOY207)
+
+tic("project raster")
+
+VF_longlat = raster::projectRaster(VF, crs = crs(NDVI_2019_DOY207),
+                               method = "bilinear")
+
+toc(log = TRUE)
+
+# reset the tictoc log 
+tic.clearlog()
+
+# project raster: 3238.01 sec elapsed
+
+VF_longlat
+
+ncell(VF_longlat)
+ncell(NDVI_2019_DOY207)
+
+#writeRaster(VF_longlat,
+#            "D:/Stenka_UWI/Topic_3/04_PROCESSED_DATA/20211101_geodata_resamp/01_longlat/VF_longlat.tif",
+#            options='COMPRESS=LZW')
+
+```

@@ -1,0 +1,300 @@
+---
+title: "Berlin impervious surface fraction (1-m resolution)"
+author: "Stenka Vulova"
+date: "23 August 2021"
+output: html_document
+---
+
+I am re-doing the Berlin impervious surface fraction.
+
+
+This time, I am using the **Urban Atlas 2018** LULC data. 
+
+I am making the raster with 1-m resolution (co-registered to 1-m BH data). 
+
+```{r libraries, include=FALSE}
+
+library(sp)
+library(raster)
+library(rgdal)
+library(lubridate)
+library(maptools)
+library(ggplot2)
+library(tidyr)
+library(plyr)
+library(dplyr)
+library(FSA) # Dunns test
+library(RColorBrewer)
+library(reshape2)
+library(scales)
+library(tidyverse)
+
+# machine learning libraries 
+library(caret)
+#library(CAST)
+library(doSNOW) # do training in parallel
+library(gbm)
+
+# https://cran.rstudio.com/web/packages/fasterize/vignettes/using-fasterize.html 
+
+library(fasterize)
+library(sf)
+library(tictoc)
+
+```
+
+# Data import and preprocessing
+
+## Berlin extent shapefile 
+
+```{r import Berlin shape, echo = FALSE }
+
+berlin_shape <- readOGR(dsn='D:/Stenka_UWI/Topic_3/03_RAW_DATA/Urban_Atlas_2018_LULC/DE001L1_BERLIN_UA2018_v013/Data',layer='Berlin_boundary') # read shapefile with Berlin extent 
+
+# change CRS of berlin_shape to match USGS products 
+berlin_shape <- spTransform(berlin_shape, CRS("+proj=utm +zone=33 +datum=WGS84 +units=m +no_defs +ellps=WGS84 +towgs84=0,0,0"))
+
+# new Berlin shape with longitude and latitude (not UTM)
+#pro_berlin_shape <- spTransform(berlin_shape, CRS("+proj=longlat +zone=33 +datum=WGS84 +units=m +no_defs +ellps=WGS84 +towgs84=0,0,0"))
+
+plot(berlin_shape)
+
+```
+
+## Urban Atlas 2018
+
+https://land.copernicus.eu/local/urban-atlas/urban-atlas-2018?tab=metadata  
+
+Spatial resolution:  
+Minimum Mapping Width: 10 m  
+
+According to the metadata, the "Projection" is "EPSG: 3035" and "ETRS89/ LAEA Europe." 
+
+```{r import Urban Atlas data }
+
+UrbanAtlas = readOGR(dsn='D:/Stenka_UWI/Topic_3/03_RAW_DATA/Urban_Atlas_2018_LULC/DE001L1_BERLIN_UA2018_v013/Data', layer='DE001L1_BERLIN_UA2018')
+
+crs(UrbanAtlas)
+# CRS arguments:
+# +proj=laea +lat_0=52 +lon_0=10 +x_0=4321000 +y_0=3210000 +ellps=GRS80 +units=m +no_defs 
+
+UA_UTM <- spTransform(UrbanAtlas, CRS("+proj=utm +zone=33 +datum=WGS84 +units=m +no_defs +ellps=WGS84 +towgs84=0,0,0")) 
+
+#plot(UA_UTM)
+
+# new shape with longitude and latitude (not UTM)
+
+#pro_UrbanAtlas <- spTransform(UrbanAtlas, CRS("+proj=longlat +zone=33 +datum=WGS84 +units=m +no_defs +ellps=WGS84 +towgs84=0,0,0"))
+
+```
+## Impervious coefficients 
+
+I am assigning the impervious surface cover (based on methods from my first publication).  
+
+```{r assign surface cover values ROTH }
+
+# import spreadsheet with surface cover values
+
+impervious = read.csv('D:/Stenka_UWI/Topic_2/06_R_SCRIPTS/20200730_surface_cover_fraction/20191013_LULC_sealing.csv', sep=',', header=T)
+
+# rename code column to match 2018 data
+colnames(impervious)[which(colnames(impervious) == 'CODE2012')] <- 'code_2018'
+
+```
+
+# Rasterize impervious cover
+
+Now let's rasterize the impervious cover for all of Berlin. I need this data to map urban ET. 
+
+```{r merge UA and impervious }
+
+#### crop to Berlin ####
+#plot(UA_UTM)
+
+# Crop UA LULC to Berlin shape 
+UA_Berlin <- raster::crop(UA_UTM, extent(berlin_shape))  # subset to extent of Berlin shape (envelope)
+#UA_Berlin <- raster::mask(UA_Berlin, berlin_shape)   # mask out all pixels that do not lie within the Berlin shape
+
+plot(UA_Berlin)
+
+#### merge with surface cover classes #### 
+
+# https://stackoverflow.com/questions/35141094/attribute-values-to-polygons-in-spatialpolygonsdataframe
+new_UA_Berlin = sp::merge(UA_Berlin, impervious)
+
+# Check that merging worked 
+
+new_UA_Berlindf = new_UA_Berlin@data
+glimpse(new_UA_Berlindf)
+
+#### Convert to sf #### 
+
+UA_Berlin_sf = sf::st_as_sf(x = new_UA_Berlin)
+
+```
+
+I need a raster to rasterize to. Let's use the 1-m BH data. 
+
+```{r Import BH data}
+
+# BH 
+BH = raster(paste('D:/Stenka_UWI/Topic_2/04_PROCESSED_DATA/BH_VH_1m/BUI_DSM_Berlin_1m_noNA.tif', sep=''))
+plot(BH, col=colorRampPalette(c("lightblue1", "navyblue", "forestgreen", 'yellow1', 'darkorange','red3', 'dark red'))(255), zlim = c(0,20))
+
+BH
+
+```
+
+Let's also subset building height to Berlin. 
+
+```{r crop BH to Berlin }
+
+BH_Berlin <- raster::crop(BH, extent(berlin_shape))
+plot(BH_Berlin)
+
+```
+
+# Fasterize 
+
+```{r fasterize Berlin impervious }
+
+tic("Fasterize in Berlin to impervious surface fraction")
+
+impervious_Berlin = fasterize::fasterize(sf = UA_Berlin_sf, raster = BH_Berlin, field = "Impervious", fun = "max")
+
+toc(log = TRUE) #Notes the current timer and computes elapsed time since the matching call to tic(). 
+
+# reset the tictoc log 
+
+tic.clearlog()
+
+#writeRaster(impervious_Berlin,"D:/Stenka_UWI/Topic_3/04_PROCESSED_DATA/20210823_surface_fractions/impervious/Berlin_impervious_fraction_1m.tif", options='COMPRESS=LZW')
+
+plot(impervious_Berlin, col=colorRampPalette(c("khaki1", 'yellow1', 'darkorange','red3', 'purple4'))(255), main= "Impervious surface fraction (Berlin)",
+     maxpixels=1e8)
+
+impervious_Berlin
+
+```
+
+# Create ISF raster based upon 10-m Urban Atlas BH 
+
+## Import UA BH data 
+
+There is still only building height from 2012. 
+
+```{r import UA 2012 BH }
+
+BH_10m = raster::raster("D:/Stenka_UWI/Topic_1/03_RAW_DATA/Copernicus/Building_Height_2012/DE001L1_BERLIN_UA2012_DHM/DE001L1_BERLIN_UA2012_DHM.tif")
+
+crs(BH_10m)
+# CRS arguments:
+# +proj=laea +lat_0=52 +lon_0=10 +x_0=4321000 +y_0=3210000 +ellps=GRS80 +units=m +no_defs 
+
+BH_10m_UTM <- raster::projectRaster(BH_10m, crs = "+proj=utm +zone=33 +datum=WGS84 +units=m +no_defs +ellps=WGS84 +towgs84=0,0,0") 
+
+plot(BH_10m_UTM)
+
+# save the raster 
+
+#writeRaster(BH_10m_UTM ,"D:/Stenka_UWI/Topic_3/04_PROCESSED_DATA/Urban_Atlas_BH_2012/BH_10m_UTM.tif", options='COMPRESS=LZW')
+
+```
+
+## Rasterize in 10m
+
+```{r fasterize Berlin impervious 10m }
+
+tic("Fasterize in Berlin to impervious surface fraction")
+
+ISF_Berlin_10m = fasterize::fasterize(sf = UA_Berlin_sf, raster = BH_10m_UTM, field = "Impervious", fun = "max")
+
+toc(log = TRUE) #Notes the current timer and computes elapsed time since the matching call to tic(). 
+
+# reset the tictoc log 
+
+tic.clearlog()
+
+#writeRaster(ISF_Berlin_10m,"D:/Stenka_UWI/Topic_3/04_PROCESSED_DATA/20210823_surface_fractions/impervious/Berlin_impervious_fraction_10m.tif", options='COMPRESS=LZW')
+
+plot(ISF_Berlin_10m, col=colorRampPalette(c("khaki1", 'yellow1', 'darkorange','red3', 'purple4'))(255), main= "Impervious surface fraction (Berlin)",
+     maxpixels=1e8)
+
+ISF_Berlin_10m
+
+```
+
+# Create water fraction raster using 2018 UA
+
+## Assign surface cover 
+
+I will assign surface cover, where 1 = present and 0 = absent. 
+
+```{r assign surface cover values }
+
+# import spreadsheet with surface cover values
+
+surfacecover = read.csv('D:/Stenka_UWI/Topic_2/06_R_SCRIPTS/20200730_surface_cover_fraction/20200730_surface_fraction.csv', sep=',', header=T)
+
+surfacecover
+
+# rename code column to match 2018 data
+colnames(surfacecover)[which(colnames(surfacecover) == 'CODE2012')] <- 'code_2018'
+
+# https://stackoverflow.com/questions/35141094/attribute-values-to-polygons-in-spatialpolygonsdataframe
+UA_water = sp::merge(UA_Berlin, surfacecover)
+
+# Check that merging worked 
+
+UA_waterdf = UA_water@data
+glimpse(UA_waterdf)
+
+## convert to sf 
+water_sf = sf::st_as_sf(x = UA_water)
+
+
+```
+
+## Rasterize at 1m resolution 
+
+```{r fasterize ROTH water 1m }
+
+# https://cran.rstudio.com/web/packages/fasterize/vignettes/using-fasterize.html 
+
+tic("Fasterize to water surface fraction")
+
+water_1m = fasterize::fasterize(sf = water_sf, raster = BH_Berlin, field = "Water", fun = "max")
+
+toc(log = TRUE) #Notes the current timer and computes elapsed time since the matching call to tic(). 
+
+# reset the tictoc log 
+
+tic.clearlog()
+
+#writeRaster(water_1m,"D:/Stenka_UWI/Topic_3/04_PROCESSED_DATA/20210823_surface_fractions/water/Berlin_water_fraction_1m.tif", options='COMPRESS=LZW')
+
+plot(water_1m, col=colorRampPalette(c("khaki1", 'yellow1', 'darkorange','red3', 'purple4'))(255), main= "Water surface fraction")
+
+```
+
+## Rasterize at 10m resolution 
+
+```{r fasterize ROTH water 10m }
+
+# https://cran.rstudio.com/web/packages/fasterize/vignettes/using-fasterize.html 
+
+tic("Fasterize in ROTH to water surface fraction")
+
+water_10m = fasterize::fasterize(sf = water_sf, raster = BH_10m_UTM, field = "Water", fun = "max")
+
+toc(log = TRUE) #Notes the current timer and computes elapsed time since the matching call to tic(). 
+
+# reset the tictoc log 
+
+tic.clearlog()
+
+#writeRaster(water_10m,"D:/Stenka_UWI/Topic_3/04_PROCESSED_DATA/20210823_surface_fractions/water/Berlin_water_fraction_10m.tif", options='COMPRESS=LZW')
+
+plot(water_10m, col=colorRampPalette(c("khaki1", 'yellow1', 'darkorange','red3', 'purple4'))(255), main= "Water surface fraction")
+
+```

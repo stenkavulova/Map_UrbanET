@@ -1,0 +1,111 @@
+---
+title: "Summary statistics monthly"
+author: "Stenka Vulova"
+date: "23 Feb. 2022"
+output: html_document
+---
+
+# Libraries 
+
+```{r libraries, include = FALSE }
+
+library(sp)
+library(raster)
+library(rgdal)
+library(lubridate)
+library(maptools)
+library(ggplot2)
+library(tidyr)
+library(plyr)
+library(dplyr)
+library(RColorBrewer)
+library(reshape2)
+library(scales)
+library(readr)
+library(rgeos)
+
+library(terra)
+
+library(grid)
+library(spatstat)
+library(sf)
+
+library(zoo)
+library(tictoc) # benchmarking
+
+library(pbapply)
+
+library(exactextractr)
+
+```
+
+
+# Load monthly ET
+
+## Load
+
+```{r load maps monthly }
+
+# example file name
+# ETmonthly_2019_01
+
+filenames = list.files( path = "D:/Stenka_UWI/Topic_3/05_RESULTS/20220128_monthly_ET_maps", pattern = '^ETmonthly_2019',
+                        full.names = TRUE )
+
+length(filenames) # 12
+
+head(filenames)
+tail(filenames)
+
+# Load as rast 
+
+l = lapply(filenames, terra::rast)
+
+raster::plot(l[[6]], col = colorRampPalette(c("dark red", "red3", "orange1", 'lightgoldenrod1', "seagreen1", "dodgerblue4", "blue4"))(255))
+
+# Make a stack 
+
+brick = terra::rast(l)
+terra::plot(brick[[6]])
+
+```
+
+# Use global function
+
+```{r global }
+
+# min
+min_ET = terra::global(brick, fun = "min", na.rm = TRUE) 
+min_ET$month = rownames(min_ET)
+
+# max
+max_ET = terra::global(brick, fun = "max", na.rm = TRUE) 
+max_ET$month = rownames(max_ET)
+
+# mean
+mean_ET = terra::global(brick, fun = "mean", na.rm = TRUE) 
+mean_ET$month = rownames(mean_ET)
+
+# sd
+sd_ET = terra::global(brick, fun = "sd", na.rm = TRUE) 
+sd_ET$month = rownames(sd_ET)
+
+```
+
+# Combine into one df 
+
+```{r combine into one df }
+
+dfs = list(min_ET, mean_ET, max_ET, sd_ET)
+
+summ_monthlyET = plyr::join_all(dfs)
+
+# save 
+
+#save(summ_monthlyET, file = "D:/Stenka_UWI/Topic_3/05_RESULTS/20220223_summstats_month/summ_monthlyET.RData")
+
+#write.csv(summ_monthlyET, file = "D:/Stenka_UWI/Topic_3/05_RESULTS/20220223_summstats_month/summ_monthlyET.csv",
+#          row.names = FALSE)
+
+```
+

@@ -1,0 +1,97 @@
+---
+title: "Annual ET map"
+author: "Stenka Vulova"
+date: "28 Jan. 2022"
+output: html_document
+---
+
+I am summing all monthly ETs for an annual ET in 2019. 
+
+# Libraries 
+
+```{r libs, include = FALSE }
+
+library(sp)
+library(raster)
+library(rgdal)
+library(lubridate)
+library(maptools)
+library(ggplot2)
+library(tidyr)
+library(plyr)
+library(dplyr)
+library(RColorBrewer)
+library(reshape2)
+library(scales)
+library(readr)
+library(rgeos)
+
+library(grid)
+library(spatstat)
+library(sf)
+
+library(zoo)
+library(tictoc) # benchmarking
+
+library(terra)
+
+```
+
+# Get files 
+
+```{r load monthly maps }
+
+filenames = list.files( path = "D:/Stenka_UWI/Topic_3/05_RESULTS/20220128_monthly_ET_maps", pattern = '^ETmonthly_2019_',
+                        full.names = TRUE )
+
+length(filenames) # 12
+
+head(filenames)
+tail(filenames)
+
+# Load as rast 
+
+l = lapply(filenames, terra::rast)
+
+terra::plot(l[[6]], col = colorRampPalette(c("dark red", "red3", "orange1", 'lightgoldenrod1', "seagreen1", "dodgerblue4", "blue4"))(255))
+
+# Make a stack 
+
+stack = terra::rast(l)
+
+
+```
+
+## Sum
+
+```{r sum annual }
+
+ETannual = terra::app(stack, fun = sum)
+
+terra::plot(ETannual, col = colorRampPalette(c("dark red", "red3", "orange1", 'lightgoldenrod1', "seagreen1", "dodgerblue4", "blue4"))(255))
+
+# convert to normal raster 
+
+ETannual_2019 = raster::raster(ETannual)
+
+ETannual_2019
+#class      : RasterLayer 
+#dimensions : 3734, 7460, 27855640  (nrow, ncol, ncell)
+#resolution : 8.983153e-05, 8.983153e-05  (x, y)
+#extent     : 13.09016, 13.7603, 52.33953, 52.67496  (xmin, xmax, ymin, ymax)
+#crs        : +proj=longlat +datum=WGS84 +no_defs 
+#source     : memory
+#names      : sum 
+#values     : 12.5801, 72.61007  (min, max)
+
+raster::plot(ETannual_2019, col = colorRampPalette(c("dark red", "red3", "orange1", 'lightgoldenrod1', "seagreen1", "dodgerblue4", "blue4"))(255),
+             zlim = c(0, 450),
+     maxpixels=1e8)
+
+# save raster 
+
+raster::writeRaster(ETannual_2019, 
+                      filename = "D:/Stenka_UWI/Topic_3/05_RESULTS/20220128_monthly_ET_maps/2019_annual_sum/ETannual_2019.tif",
+                      options='COMPRESS=LZW' )
+
+```

@@ -1,0 +1,102 @@
+---
+title: "Monthly ET sums (July)"
+author: "Stenka Vulova"
+date: "28 Jan. 2022"
+output: html_document
+---
+
+I am summing the ET on a monthly basis. 
+
+# Libraries 
+
+```{r libs, include = FALSE }
+
+library(sp)
+library(raster)
+library(rgdal)
+library(lubridate)
+library(maptools)
+library(ggplot2)
+library(tidyr)
+library(plyr)
+library(dplyr)
+library(RColorBrewer)
+library(reshape2)
+library(scales)
+library(readr)
+library(rgeos)
+
+library(grid)
+library(spatstat)
+library(sf)
+
+library(zoo)
+library(tictoc) # benchmarking
+
+library(terra)
+
+```
+
+# Get files 
+
+I am getting the files for one month.
+
+```{r load maps for a month }
+
+# example file name
+# ET_2019-01-11
+
+filenames = list.files( path = "D:/Stenka_UWI/Topic_3/05_RESULTS/20211129_dailyET_2019/all", pattern = '^ET_2019-07-',
+                        full.names = TRUE )
+
+length(filenames) # 31
+
+head(filenames)
+tail(filenames)
+
+# Load as rast 
+
+l = lapply(filenames, terra::rast)
+
+terra::plot(l[[16]], col = colorRampPalette(c("dark red", "red3", "orange1", 'lightgoldenrod1', "seagreen1", "dodgerblue4", "blue4"))(255))
+
+# Make a stack 
+
+stack = terra::rast(l)
+
+```
+
+## Sum
+
+```{r sum monthly }
+
+ETmonthly = terra::app(stack, fun = sum)
+
+terra::plot(ETmonthly, col = colorRampPalette(c("dark red", "red3", "orange1", 'lightgoldenrod1', "seagreen1", "dodgerblue4", "blue4"))(255))
+
+# convert to normal raster 
+
+ETmonthly_2019_07 = raster::raster(ETmonthly)
+
+ETmonthly_2019_07
+#class      : RasterLayer 
+#dimensions : 3734, 7460, 27855640  (nrow, ncol, ncell)
+#resolution : 8.983153e-05, 8.983153e-05  (x, y)
+#extent     : 13.09016, 13.7603, 52.33953, 52.67496  (xmin, xmax, ymin, ymax)
+#crs        : +proj=longlat +datum=WGS84 +no_defs 
+#source     : memory
+#names      : sum 
+#values     : 13.18, 75.12546  (min, max)
+
+raster::plot(ETmonthly_2019_07, col = colorRampPalette(c("dark red", "red3", "orange1", 'lightgoldenrod1', "seagreen1", "dodgerblue4", "blue4"))(255),
+             zlim = c(0, 65),
+     maxpixels=1e8)
+
+# save raster 
+
+raster::writeRaster(ETmonthly_2019_07, 
+                      filename = "D:/Stenka_UWI/Topic_3/05_RESULTS/20220128_monthly_ET_maps/ETmonthly_2019_07.tif",
+                      options='COMPRESS=LZW' )
+
+```
+

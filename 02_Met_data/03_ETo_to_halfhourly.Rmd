@@ -1,0 +1,140 @@
+---
+title: "Make ETo half-hourly"
+author: "Stenka Vulova"
+date: "19 Oct. 2021"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+# Libraries 
+
+```{r Libraries, include = FALSE }
+
+library(ggspatial)
+library(gstat)
+library(mapview)
+library(rdwd)
+library(leaflet)
+library(tidyverse)
+library(lubridate)
+library(sf)
+library(WindVerification) 
+library(xts)
+library(MeTo)
+#install.packages('bit64')
+library('bit64')
+library(devtools)
+
+library(raster)
+
+# Benchmarking 
+library(tictoc)
+
+```
+
+# Load data 
+
+```{r Load ETo data }
+
+load("/Users/stenkavulova/Dropbox/Stenka_UWI/Topic_3/04_PROCESSED_DATA/20211018_ETo/ETo_for_interpol_ws2.RData")
+# 26329 obs. 
+
+# Subset to 2019 and 2020
+
+ETo_for_interpol_ws2$Year = lubridate::year(ETo_for_interpol_ws2$timestamp)
+
+ETo_1920 = subset(ETo_for_interpol_ws2, Year == 2019 | Year == 2020 )
+
+unique(ETo_1920$Year)
+# 17544 obs. 
+
+summary(ETo_1920)
+# There are no NAs. 
+
+```
+
+# Half-hourly timestamp 
+
+```{r halfhourly timestamp }
+
+min(ETo_1920$timestamp)
+max(ETo_1920$timestamp) 
+
+# https://stackoverflow.com/questions/16787038/insert-rows-for-missing-dates-times
+
+ts_halfhour = seq.POSIXt(min(ETo_1920$timestamp), as.POSIXct("2020-12-31 23:30:00 UTC", tz = "GMT"), by="30 mins")
+
+ts_halfhour = format.POSIXct(ts_halfhour,"%Y-%m-%d %H:%M:%S")
+
+df_halfhour <- data.frame(timestamp=ts_halfhour)
+
+df_halfhour$timestamp = as.POSIXct(df_halfhour$timestamp, format = "%Y-%m-%d %H:%M:%S", tz = "UTC")
+
+nrow(df_halfhour) # 35088
+nrow(ETo_1920) # 17544
+nrow(ETo_1920) * 2
+
+```
+
+# Make ETo half hourly
+
+```{r Make ETo half hourly }
+
+ETo_halfh_1920 = dplyr::full_join(ETo_1920, df_halfhour)
+
+summary(ETo_halfh_1920)
+
+# order by timestamp 
+ETo_halfh_1920 = ETo_halfh_1920[order(ETo_halfh_1920$timestamp), ]
+rownames(ETo_halfh_1920) = 1:nrow(ETo_halfh_1920)
+
+```
+
+# Interpolate half hourly 
+
+Now we have half-hourly ET0 data with NAs and interpolate linearly. 
+
+```{r gap-filling half hourly }
+
+# maxgap: maximum number of consecutive NAs to fill. Any longer gaps will be left unchanged. Note that all methods listed above can accept maxgap as it is ultimately passed to the default method. In na.spline the maxgap argument cannot be combined with xout, though.
+
+# maxgap = 7 (3.5 hours), so that <4 hour gaps are filled
+# This time we have half-hourly data so a gap of 4 hours takes up 8 consecutive NAs
+# The maxgap is 7 (3.5 hours)
+
+ETo_halfh_2 = ETo_halfh_1920
+ETo_halfh_2[,2:11] = lapply(ETo_halfh_2[,2:11], na.fill, fill = "extend")
+
+summary(ETo_halfh_2)
+
+ETo_halfh_2$Year = lubridate::year(ETo_halfh_2$timestamp)
+
+summary(ETo_halfh_2)
+
+```
+
+# Old interpolation method
+
+```{r old interpol method }
+
+ETo_halfh_3 = ETo_halfh_1920
+ETo_halfh_3[,2:11] = lapply(ETo_halfh_3[,2:11], na.approx, na.rm = FALSE, maxgap = 7)
+
+summary(ETo_halfh_3)
+
+```
+
+
+# Save data 
+
+```{r save data }
+
+ETo_halfhour_ws2 = ETo_halfh_2
+
+#write.csv(ETo_halfhour_ws2, file = "/Users/stenkavulova/Dropbox/Stenka_UWI/Topic_3/04_PROCESSED_DATA/20211018_ETo/Halfhourly/ETo_halfhour_ws2.csv", row.names = FALSE)
+
+#save(ETo_halfhour_ws2, file = "/Users/stenkavulova/Dropbox/Stenka_UWI/Topic_3/04_PROCESSED_DATA/20211018_ETo/Halfhourly/ETo_halfhour_ws2.RData")
+
+```
+

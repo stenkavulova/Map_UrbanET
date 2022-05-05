@@ -1,0 +1,95 @@
+---
+title: "Metrics table"
+author: "Stenka Vulova"
+date: "24 Nov. 2021"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+```{r libraries, include = FALSE }
+
+library(sp)
+library(raster)
+library(rgdal)
+library(lubridate)
+library(maptools)
+library(ggplot2)
+library(tidyr)
+library(plyr)
+library(dplyr)
+library(FSA) # Dunns test
+library(RColorBrewer)
+library(reshape2)
+library(scales)
+library(hydroGOF) # performance metrics
+
+```
+
+# Load RF metrics dataframes 
+
+Let's load all of the metrics dataframes generated so far. 
+
+```{r load RF metrics dfs }
+
+#### ROTH #### 
+
+# 2019
+load("/Users/stenkavulova/Dropbox/Stenka_UWI/Topic_3/05_RESULTS/20211118_metrics_RF/Test2019/TestROTH/metrics_Test19_ROTH_RF.RData")
+
+# 2020
+load("/Users/stenkavulova/Dropbox/Stenka_UWI/Topic_3/05_RESULTS/20211118_metrics_RF/Test2020/TestROTH/metrics_Test20_ROTH_RF.RData")
+
+#### TUCC #### 
+
+# 2019
+load("/Users/stenkavulova/Dropbox/Stenka_UWI/Topic_3/05_RESULTS/20211118_metrics_RF/Test2019/TestTUCC/metrics_Test19_TUCC_RF.RData")
+
+# 2020 
+load("/Users/stenkavulova/Dropbox/Stenka_UWI/Topic_3/05_RESULTS/20211118_metrics_RF/Test2020/TestTUCC/metrics_Test20_TUCC_RF.RData")
+
+```
+
+```{r join all }
+
+dfs = list(metrics_Test19_ROTH_RF, metrics_Test20_ROTH_RF, metrics_Test19_TUCC_RF, metrics_Test20_TUCC_RF)
+
+RF_metrics_all = plyr::join_all(dfs,
+                                 type = "full")
+
+```
+
+# Round decimal points 
+
+Use 3 decimal points (for R2 and NSE), 4 decimal points (for RMSE, MAE, and ME), 2 decimal points (for pbias and NRMSE) 
+
+```{r Round }
+
+metrics_round = RF_metrics_all
+
+# Use 3 decimal points (for R2 and NSE)
+
+metrics_round$R2 = round(metrics_round$R2, digits = 3 )
+metrics_round$NSE = round(metrics_round$NSE, digits = 3 )
+
+# Use 4 decimal points (for RMSE, MAE, ME)
+
+metrics_round$RMSE = round(metrics_round$RMSE, digits = 4 )
+metrics_round$ME = round(metrics_round$ME, digits = 4 )
+metrics_round$MAE = round(metrics_round$MAE, digits = 4 )
+
+# Use 2 decimal points (for pbias and NRMSE)
+
+metrics_round$pbias = round(metrics_round$pbias, digits = 2 )
+metrics_round$NRMSE = round(metrics_round$NRMSE, digits = 2 )
+
+metrics_round
+
+# save dataframe 
+
+#write.csv(metrics_round, file = "/Users/stenkavulova/Dropbox/Stenka_UWI/Topic_3/05_RESULTS/20211122_RF_metrics_tables/metrics_round.csv", row.names = FALSE)
+
+#save(metrics_round, file = "/Users/stenkavulova/Dropbox/Stenka_UWI/Topic_3/05_RESULTS/20211122_RF_metrics_tables/metrics_round.RData")
+
+```
+
